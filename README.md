@@ -19,13 +19,13 @@
 - Function 2: Backup treatment plan information (RTPlan, RTStruct, CT) corresponding to each RTRecord from the RVS to the RTPACS. Running totals of each RTPlan, RTStruct, CT are updated in log files.
 - The main backup program is 'scu_move_git_v1.py'. This script calls 'scu_find_git_v1.py' to query the RVS, and calls 'scu_move_support_git_v1.py' to backup treatment plan information corresponding to the RTRecords.
 
-#Generate Treatment Report
+# Generate Treatment Report
 1. Run 'get_treatment_report_git_v1.py' (make sure to adjust the study_start_date, treatment_start_date, and end_date variables before running)
 2. Purpose: To generate a report of all patients currently undergoing RT Treatments including their current fraction number using back up records from MIM in case ARIA is unavailable
 3. 'treatment_start_date' and 'end_date' specifies the date range of what the user considers to be a "patient currently undergoing treatment" to be included in the report (e.g. received a fraction within the past 7 days)
 4. 'study_start_date' is when the study was first created. Since MIM queries in a hierarchial fashion from Study->Series->Image, 'study_start_date' should be set to long before the 'treatment_start_date' to ensure no patients are erroneously overlooked (recommended at least 1 month prior). However, setting 'study_start_date' too far into the past increases the number of patient cases MIM has to search through, which significantly increases the workload on the system.
 
-#Setting Up Windows Task Scheduler
+# Setting Up Windows Task Scheduler
 1. In 'Task Scheduler', click 'Create Task'
 2. In 'Trigger' tab, click 'New' and set task to repeat 10 minutes, indefinitely
 3. In 'Actions' tab, clicl 'New'
