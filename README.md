@@ -10,8 +10,6 @@
     b. The ports should always be integers, not strings
     c. "[local]" referes to your machine, "[rvs]" refers to the Record and Verify System, "[mim_server]" refers to the RTPACS server,   and "[mim_server_qr]" refers to the RTPACS query information
 2. Logger configurations should be updated in logging_git_v1.toml. Ensure the change the SMTP email handler
-3. Adjust the AETitles, IP Addresses, and Ports in scu_move_support_git_v1.python
-    a. In the functions main() and run_with_scu_move(), the AE_Titles, Ports and IP Addresses in the functions have been removed and need to be updated. RVS refers to Record and Verify System. All Ports must be entered as integers
 
 # Backup System
 - Purpose: To transfer RTRecord Objects from a Record and Verify System (RVS) to a RTPACS.
