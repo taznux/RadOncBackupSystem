@@ -4,8 +4,17 @@ from pynetdicom import AE, evt, AllStoragePresentationContexts, StoragePresentat
 from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelMove, RTBeamsTreatmentRecordStorage, StudyRootQueryRetrieveInformationModelFind, PatientRootQueryRetrieveInformationModelMove, Verification
 import os
 import copy
+import tomllib
 from datetime import datetime
 from tenacity import retry, TryAgain, wait_exponential, stop_after_attempt, RetryError
+
+with open('config.toml', 'rb') as f:
+    sockets = tomllib.load(f)   
+    SCU = sockets['local']
+    QR_SCP = sockets['aria']
+    LOCAL_STORE_SCP = sockets['local']
+    PACS_STORE_SCP = sockets['mim_server']
+    PACS_QUERY_SCP = sockets['mim_server_qr']
 
 def create_patient_dictionary(num_patients):
 
@@ -774,12 +783,12 @@ def main():
 
     raw_patient_dict = create_patient_dictionary(len(rtrecord_uid_set))
     patient_dict = add_rtrecord_uids(raw_patient_dict, rtrecord_uid_set, rtrecord_key)
-    patient_dict = query_aria_rtplan_uid(patient_dict, "INSERT_LOCAL_AE_TITLE", "INSERT_RVS_IP", "INSERT RVS PORT AS INT", "INSERT_RVS_AE_TITLE", rtrecord_key, rtplan_key)
-    patient_dict, missing_dicom_object_dict = rtplan_query(patient_dict, rtplan_key, "INSERT_LOCAL_AE_TITLE", "INSERT_RTPACS_IP", "INSERT_RTPACS_PORT_AS_INT", "INSERT_RTPACS_AE_TITLE")
-    patient_dict, moved_rtrecord_key = rtrecord_move(patient_dict, missing_dicom_object_dict, rtrecord_key, temp_move_path, 'INSERT_LOCAL_IP', "INSERT PORT AS INT", "INSERT_LOCAL_AE_TITLE", "INSERT_RVS_IP", "INSERT RVS PORT AS INT", 'INSERT RVS AE TITLE', 'INSERT LOCAL AE TITLE')
+    patient_dict = query_aria_rtplan_uid(patient_dict, SCU['AETitle'], QR_SCP['IP'], QR_SCP['Port'], QR_SCP['AETitle'], rtrecord_key, rtplan_key)
+    patient_dict, missing_dicom_object_dict = rtplan_query(patient_dict, rtplan_key, SCU['AETitle'], PACS_QUERY_SCP['IP'], PACS_QUERY_SCP['Port'], PACS_QUERY_SCP['AETitle'])
+    patient_dict, moved_rtrecord_key = rtrecord_move(patient_dict, missing_dicom_object_dict, rtrecord_key, temp_move_path, LOCAL_STORE_SCP['IP'], LOCAL_STORE_SCP['Port'], LOCAL_STORE_SCP['AETitle'], QR_SCP['IP'], QR_SCP['Port'], QR_SCP['AETitle'], SCU['AETitle'])
     patient_dict = rtrecord_processing(patient_dict, missing_dicom_object_dict, moved_rtrecord_key, rtplan_key, '20241107')
-    patient_dict = query_mim_object_uid(patient_dict, rtplan_key, rtstruct_key, "INSERT_LOCAL_AE_TITLE", "INSERT RTPACS IP", "INSERT RTPACS PORT AS INT", "INSERT RTPACS AE") #patient_dict now contains partial dataset containing the metadata for the rtstruct
-    patient_dict, missing_dicom_object_dict = rtstruct_query(patient_dict, rtstruct_key, "INSERT LOCAL AE", "INSERT RTPACS AE AS INT", 'INSERT RTPACS PORT AS INT', "INSERT RTPACS AE")
+    patient_dict = query_mim_object_uid(patient_dict, rtplan_key, rtstruct_key, SCU['AETitle'], PACS_QUERY_SCP['IP'], PACS_QUERY_SCP['Port'], PACS_QUERY_SCP['AETitle']) #patient_dict now contains partial dataset containing the metadata for the rtstruct
+    patient_dict, missing_dicom_object_dict = rtstruct_query(patient_dict, rtstruct_key, SCU['AETitle'], PACS_QUERY_SCP['IP'], PACS_QUERY_SCP['Port'], PACS_QUERY_SCP['AETitle'])
     missing_dicom_object_dict, patient_dict = update_missing_object_log(missing_dicom_object_dict, patient_dict, rtstruct_key, '20241107')
     pass
 
@@ -787,13 +796,13 @@ def main():
 def run_with_scu_move(rtrecord_uid_set, rtrecord_key, rtplan_key, rtstruct_key, ct_key, temp_move_path, used_date):
     raw_patient_dict = create_patient_dictionary(len(rtrecord_uid_set))
     patient_dict = add_rtrecord_uids(raw_patient_dict, rtrecord_uid_set, rtrecord_key)
-    patient_dict = query_aria_rtplan_uid(patient_dict, "INSERT_LOCAL_AE_TITLE", "INSERT_RVS_IP", "INSERT RVS PORT AS INT", "INSERT_RVS_AE_TITLE", rtrecord_key, rtplan_key)
-    patient_dict, missing_dicom_object_dict = rtplan_query(patient_dict, rtplan_key, "INSERT_LOCAL_AE_TITLE", "INSERT_RTPACS_IP", "INSERT_RTPACS_PORT_AS_INT", "INSERT_RTPACS_AE_TITLE")
-    patient_dict, moved_rtrecord_key = rtrecord_move(patient_dict, missing_dicom_object_dict, rtrecord_key, temp_move_path, 'INSERT_LOCAL_IP', "INSERT PORT AS INT", "INSERT_LOCAL_AE_TITLE", "INSERT_RVS_IP", "INSERT RVS PORT AS INT", 'INSERT RVS AE TITLE', 'INSERT LOCAL AE TITLE')
-    patient_dict = rtrecord_processing(patient_dict, missing_dicom_object_dict, moved_rtrecord_key, rtplan_key, '20241107')
-    patient_dict = query_mim_object_uid(patient_dict, rtplan_key, rtstruct_key, "INSERT_LOCAL_AE_TITLE", "INSERT RTPACS IP", "INSERT RTPACS PORT AS INT", "INSERT RTPACS AE") #patient_dict now contains partial dataset containing the metadata for the rtstruct
-    patient_dict, missing_dicom_object_dict = rtstruct_query(patient_dict, rtstruct_key, "INSERT LOCAL AE", "INSERT RTPACS AE AS INT", 'INSERT RTPACS PORT AS INT', "INSERT RTPACS AE")
-    missing_dicom_object_dict, patient_dict = update_missing_object_log(missing_dicom_object_dict, patient_dict, rtstruct_key, '20241107')
+    patient_dict = query_aria_rtplan_uid(patient_dict, SCU['AETitle'], QR_SCP['IP'], QR_SCP['Port'], QR_SCP['AETitle'], rtrecord_key, rtplan_key)
+    patient_dict, missing_dicom_object_dict = rtplan_query(patient_dict, rtplan_key, SCU['AETitle'], PACS_QUERY_SCP['IP'], PACS_QUERY_SCP['Port'], PACS_QUERY_SCP['AETitle'])
+    patient_dict, moved_rtrecord_key = rtrecord_move(patient_dict, missing_dicom_object_dict, rtrecord_key, temp_move_path, LOCAL_STORE_SCP['IP'], LOCAL_STORE_SCP['Port'], LOCAL_STORE_SCP['AETitle'], QR_SCP['IP'], QR_SCP['Port'], QR_SCP['AETitle'], SCU['AETitle'])
+    patient_dict = rtrecord_processing(patient_dict, missing_dicom_object_dict, moved_rtrecord_key, rtplan_key, used_date)
+    patient_dict = query_mim_object_uid(patient_dict, rtplan_key, rtstruct_key, SCU['AETitle'], PACS_QUERY_SCP['IP'], PACS_QUERY_SCP['Port'], PACS_QUERY_SCP['AETitle']) #patient_dict now contains partial dataset containing the metadata for the rtstruct
+    patient_dict, missing_dicom_object_dict = rtstruct_query(patient_dict, rtstruct_key, SCU['AETitle'], PACS_QUERY_SCP['IP'], PACS_QUERY_SCP['Port'], PACS_QUERY_SCP['AETitle'])
+    missing_dicom_object_dict, patient_dict = update_missing_object_log(missing_dicom_object_dict, patient_dict, rtstruct_key, used_date)
 
 
 if __name__ == "__main__":
