@@ -24,8 +24,6 @@ def handle_store(event):
     """Handle a C-STORE service request"""
     global RECORDS_REPORT
     ds = event.dataset
-    # ds.file_meta = event.file_meta
-    # ds.save_as('data/' + ds.SOPInstanceUID, write_like_original=False)
     keys = [
         'PatientID',
         'PatientName',
@@ -169,12 +167,6 @@ def get_plan_labels(report: pd.DataFrame):
                 image_ds.RTPlanLabel = ''
                 responses = assoc.send_c_find(image_ds, StudyRootQueryRetrieveInformationModelFind)
                 plan_label = [ds.RTPlanLabel for _, ds in responses if ds and ds.SOPInstanceUID == plan_uid]
-                # for _, identifier in responses:
-                #     if identifier:
-                #         print(identifier.SOPInstanceUID, plan_uid)
-                #     if identifier and identifier.SOPInstanceUID == plan_uid:
-                #         plan_label = identifier.RTPlanLabel
-                #         break
                 if plan_label:
                     plan_labels.append(plan_label[0])
                     break
@@ -188,7 +180,6 @@ def get_plan_labels(report: pd.DataFrame):
     return plan_labels
             
 if __name__ == '__main__':
-    # record_uids = find_uids(study_date='20200101-20240530', treatment_date='20200101-20251231')
     study_start_date = datetime(2024, 3, 1)
     treatment_start_date = datetime(2024, 5, 1)
     end_date = datetime(2024, 5, 7)

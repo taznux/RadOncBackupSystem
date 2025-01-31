@@ -38,7 +38,7 @@ if __name__ == '__main__':
     ### PATIENT ###
     ds.PatientID = ''
     ds.PatientName = ''
-    ds.TreatmentDate = '20240813-20240813'
+    ds.TreatmentDate = ''
     ds.TreatmentTime = ''
     ### STUDY ###
     ds.StudyID = ''
@@ -49,7 +49,7 @@ if __name__ == '__main__':
     ds.Modality = 'RTRECORD'
     ### IMAGE ###
     ds.SOPInstanceUID = ''
-    ds.SOPClassUID = RTBeamsTreatmentRecordStorage  # '1.2.840.10008.5.1.4.1.1.481.4'
+    ds.SOPClassUID = RTBeamsTreatmentRecordStorage 
     ### RERFERENCED CLASS ###
     ds.ReferencedSOPClassUID = ''
     ds.ReferencedSOPInstanceUID = ''
@@ -61,7 +61,6 @@ if __name__ == '__main__':
     ds.NumberOfFractionsPlanned = ''
     ds.CurrentFractionNumber = ''
     ds.TreatmentMachineName = ''
-    # ds.StudyDate = '20240101-20240530'
     ds.RTPlanLabel = ''
 
     find(ds, debug_to_console=True)

@@ -11,9 +11,9 @@ from pynetdicom import AE, evt, StoragePresentationContexts
 from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelMove, RTBeamsTreatmentRecordStorage, RTPlanStorage
 from tenacity import retry, TryAgain, wait_exponential, stop_after_attempt, RetryError
 from pynetdicom.pdu_primitives import SOPClassExtendedNegotiation
-from scu_find import find
+from scu_find_git_v1 import find
 
-from scu_move_support_v4 import run_with_scu_move
+from scu_move_support_git_v1 import run_with_scu_move
 
 with open ('logging.toml', 'rb') as f:
     logging.config.dictConfig(tomllib.load(f))
@@ -34,14 +34,11 @@ def handle_store(event):
     global moved_ds
     moved_ds = ds
     pacs_store(ds, SCU['AETitle'], PACS_STORE_SCP['IP'], PACS_STORE_SCP['Port'], PACS_STORE_SCP['AETitle'])
-    # ds.save_as('data4/' + ds.SOPInstanceUID, write_like_original=False)
     return 0x0000
 
 
 @retry(wait=wait_exponential(multiplier=1, exp_base=2), stop=stop_after_attempt(7))
 def move(ds, handler_function):
-
-    # print("entered move!")
 
     ae = AE(SCU['AETitle'])
     ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
@@ -87,11 +84,8 @@ def move(ds, handler_function):
     return moved_ds
     
 def pacs_store(ds, calling_ae, assoc_ip, assoc_port, assoc_ae):
-    # print("entered pacs store!")
-    # ae2 = AE(ae_title="ROSAML_THOR")
     ae2 = AE(calling_ae)
     ae2.requested_contexts = StoragePresentationContexts
-    # ae2.supported_contexts = StoragePresentationContexts
     ae2.acse_timeout = 120
     ae2.dimse_timeout = 121
     ae2.network_timeout = 122
@@ -127,7 +121,6 @@ def update_daily_num_file_log_2(log_path, today_date, log_date, sum_log_path):
 
 if __name__ == '__main__':
     today_date = datetime.today().strftime('%Y%m%d')
-    # today_date = '20241127'
 
     move_failures = set()
 
@@ -152,7 +145,6 @@ if __name__ == '__main__':
     # Find All Records For Today
     todays_uids = find(ds)
 
-    # LOGGER2.error("Caused an error")
 
     #Create backup file if it does not exist    
     if not os.path.exists(backup_log): 
@@ -163,7 +155,6 @@ if __name__ == '__main__':
         log_date = f1.readline().strip() # first line of log file is the date
         if log_date != today_date:
             with open(backup_log, 'w') as f2:
-                # f2.write(today_date + '\n')
                 f2.write(today_date)
                 f2.close()
             with open(backup_failure_log, 'w') as f3:
@@ -187,7 +178,6 @@ if __name__ == '__main__':
                 move(ds, handle_store)
             except RetryError:  #Check to make sure each rtrecord was moved to MIM
                 move_failures.add(returned_uid)
-        # move(date='20240801-20240807')
 
         # Update Daily Log File With Newly Backed Up Records
         # Overwrite Log File If Date Has Changed (this is done to prevent file from getting too large)

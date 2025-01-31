@@ -191,7 +191,7 @@ def c_move_service(input_dataset, trgt_modality, input_path, local_ip, local_por
 
 def missing_dicom_objects(modality, sop_uid, patient_id, input_date):
 
-    from scu_move_v5 import handle_store as handle_store_mim_move, pacs_store, move
+    from scu_move_git_v1 import handle_store as handle_store_mim_move, pacs_store, move
 
     """
     Writes to text file if any DICOM object is not in MIM; will check to make sure the object is not already written to text file
@@ -670,7 +670,7 @@ def rtrecord_processing(patient_dictionary, missing_dicom_objects_dict, moved_rt
                 for entry in missing_dicom_objects_dict[key1]:
                     rtplan_ds = missing_dicom_objects(entry[0], entry[1], entry[2], input_date)
                     if rtplan_ds:
-                        patient_dictionary[key1][rtplan_key] = rtplan_ds #add in statment if move failed to log in the above function
+                        patient_dictionary[key1][rtplan_key] = rtplan_ds
                     else:
                         del patient_dictionary[key1] #remove entry from dictionary as nothing downstream of the plan will be accurate -> move of the plan from ARIA to MIM failed and has been written to log
 
@@ -726,7 +726,7 @@ def rtstruct_move_and_processing(patient_dictionary, rtstruct_key, ct_key, temp_
             else:
                 print(f"Failed transfer for {key1}, {ds.PatientID}")
             if bool(rtstruct_saved_path_dict[key1]) == False: 
-                del rtstruct_saved_path_dict[key1] #NEED TO CIRCLE BACK AND DECIDE HOW TO HANDLE IF MOVE FAILURE
+                del rtstruct_saved_path_dict[key1]
 
         return rtstruct_saved_path_dict
     
