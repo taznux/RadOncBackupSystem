@@ -8,7 +8,7 @@ def find(query_dataset: Dataset, debug_to_console=False):
     with open ('config.toml', 'rb') as f:
         sockets = tomllib.load(f)
     SCU = sockets['local']
-    QR_SCP = sockets['aria']
+    QR_SCP = sockets['rvs']
 
     if debug_to_console:
         debug_logger()
