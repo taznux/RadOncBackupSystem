@@ -1,0 +1,36 @@
+[local]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[rvs]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[mim_server]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+[mim_server_qr]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+[local]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[rvs]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[mim_server]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+[mim_server_qr]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"

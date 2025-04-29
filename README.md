@@ -31,5 +31,9 @@
 5. In the 'Add arguments (optional)' field, provide the absolute path to 'scu_move_git_v1.py'
 6. In the 'Start in (optional)' field, provide the absolute path to this project directory
 
-
-
+# Running the CLI Application
+1. Navigate to the `src` directory.
+2. Use the following commands to interact with the CLI application:
+   - `python -m src.cli.query --config path/to/config.toml --source ARIA --mrn 12345 --study_date 20220101 --treatment_date 20220101`: Query information from data sources.
+   - `python -m src.cli.backup UCLA`: Backup DICOM data for the specified environment (e.g., UCLA, TJU).
+   - `python -m src.cli.validate path/to/config.toml UCLA`: Validate DICOM data for the specified environment (e.g., UCLA, TJU).
