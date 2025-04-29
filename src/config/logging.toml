@@ -17,7 +17,6 @@ level = "DEBUG"
 formatter = "standard"
 filename = "logs/pynetdicom.log"
 maxBytes = 1048576
-# maxBytes = 35048576
 backupCount = 3
 
 [handlers.file2]
@@ -37,7 +36,6 @@ fromaddr = 'error-logger@example.com'
 toaddrs = ['admin@example.com']
 subject = 'Your application encountered an error'
 
-
 # Loggers
 [loggers.pynetdicom]
 handlers = ["console", "file1"]
@@ -48,7 +46,6 @@ propagate = false
 handlers = ["console", "file2"]
 level = "DEBUG"
 propagate = false
-
 
 [loggers.scu_move]
 handlers = ["console", "file2", "email_proxy"]
