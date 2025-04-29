@@ -12,7 +12,23 @@ Port = "ENTER PORT AS INT"
 AETitle = ""
 IP = ""
 Port = "ENTER PORT AS INT"
+
 [mim_server_qr]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[aria]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[mosaiq]
+AETitle = ""
+IP = ""
+Port = "ENTER PORT AS INT"
+
+[orthanc]
 AETitle = ""
 IP = ""
 Port = "ENTER PORT AS INT"

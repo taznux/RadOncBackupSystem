@@ -1,0 +1,8 @@
+[UCLA]
+source = "ARIA"
+backup = "Orthanc"
+
+[TJU]
+source1 = "Mosaiq"
+source2 = "MIM"
+backup = "Orthanc"
