@@ -3,6 +3,7 @@
 2. Initialize your python environment
 3. Install Python packages with
 'pip install -r requirements.txt'
+4. Set up the Flask application by configuring the necessary environment variables and running the application.
 
 # Updating AETitles, IP Addresses, and Ports
 1. Open the config_git_v1.toml file
@@ -37,3 +38,42 @@
    - `python -m src.cli.query --config path/to/config.toml --source ARIA --mrn 12345 --study_date 20220101 --treatment_date 20220101`: Query information from data sources.
    - `python -m src.cli.backup UCLA`: Backup DICOM data for the specified environment (e.g., UCLA, TJU).
    - `python -m src.cli.validate path/to/config.toml UCLA`: Validate DICOM data for the specified environment (e.g., UCLA, TJU).
+
+# Flask Application
+The Flask application provides endpoints for configuring backups, viewing logs, and running recovery processes.
+
+## Endpoints
+- `POST /configure_backup`: Configure backup settings.
+- `GET /view_logs`: View logs of different types.
+- `POST /run_recovery`: Initiate a recovery process.
+
+## Usage
+1. Set up the Flask application by configuring the necessary environment variables.
+2. Run the Flask application using the command: `python src/app.py`.
+3. Use the provided endpoints to interact with the application.
+
+# Backup Systems
+The backup systems are responsible for storing and verifying DICOM data. The following backup systems are available:
+
+- **Orthanc**: A DICOM server for healthcare and medical research.
+
+For more details, refer to the `docs/backup_systems.md` file.
+
+# Data Sources
+The data sources provide DICOM data for backup and recovery processes. The following data sources are available:
+
+- **ARIA**: A data source for ARIA systems.
+- **MIM**: A data source for MIM systems.
+- **Mosaiq**: A data source for Mosaiq systems.
+
+For more details, refer to the `docs/data_sources.md` file.
+
+# Test Files
+The test files are used to verify the functionality of the backup and recovery processes. The following test files are available:
+
+- **test_aria.py**: Tests for the ARIA data source.
+- **test_mim.py**: Tests for the MIM data source.
+- **test_mosaiq.py**: Tests for the Mosaiq data source.
+- **test_orthanc.py**: Tests for the Orthanc backup system.
+
+For more details, refer to the `docs/test_files.md` file.
