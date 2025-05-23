@@ -19,4 +19,4 @@ Orthanc is a lightweight, RESTful DICOM server for healthcare and medical resear
 2. Configure Orthanc by editing the `orthanc.json` configuration file.
 3. Use the RESTful API to store and retrieve DICOM data.
 
-For more details, refer to the [Orthanc documentation](https://book.orthanc-server.com/users/getting-started.html).
+For more details, refer to the [Orthanc documentation](https://orthanc.uclouvain.be/book/index.html).
