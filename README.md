@@ -1,39 +1,168 @@
-# Installation Guide
-1. Clone respository to your machine and change to the cloned respository directory
-2. Initialize your python environment
-3. Install Python packages with
-'pip install -r requirements.txt'
+# RadOncBackupSystem
 
-# Updating AETitles, IP Addresses, and Ports
-1. Open the config_git_v1.toml file
-    a. Update the AETitles, IP Addresses, and Ports
-    b. The ports should always be integers, not strings
-    c. "[local]" referes to your machine, "[rvs]" refers to the Record and Verify System, "[mim_server]" refers to the RTPACS server,   and "[mim_server_qr]" refers to the RTPACS query information
-2. Logger configurations should be updated in logging_git_v1.toml. Ensure the change the SMTP email handler
+A DICOM Backup and Recovery System for Radiation Oncology workflows. This system provides tools to backup data from various sources like ARIA, MIM, and Mosaiq to a central backup system (e.g., Orthanc), and to query and validate this data. It includes a Flask web application for interaction and CLI scripts for batch operations.
 
-# Backup System
-- Purpose: To transfer RTRecord Objects from a Record and Verify System (RVS) to a RTPACS.
-- Function 1: Backup program queries RVS for all RTRecords within a given time interval and generate a list of their UIDs. These UIDs are compared against a log file 'logs/daily_backup.log' which contain the UIDs of RTRecords successfully backed-up to the RTPacs. If the backup is successfull, the log 'daily_backup.log' will the UIDs of the backed-up RTRecords. The backup will retry seven different times if it initially fails, and will be added to 'logs/daily_failures.log'
-- Function 2: Backup treatment plan information (RTPlan, RTStruct, CT) corresponding to each RTRecord from the RVS to the RTPACS. Running totals of each RTPlan, RTStruct, CT are updated in log files.
-- The main backup program is 'scu_move_git_v1.py'. This script calls 'scu_find_git_v1.py' to query the RVS, and calls 'scu_move_support_git_v1.py' to backup treatment plan information corresponding to the RTRecords.
+For detailed documentation on specific components, please refer to the `docs/` directory.
 
-# Generate Treatment Report
-1. Run 'get_treatment_report_git_v1.py' (make sure to adjust the study_start_date, treatment_start_date, and end_date variables before running)
-2. Purpose: To generate a report of all patients currently undergoing RT Treatments including their current fraction number using back up records from MIM in case ARIA is unavailable
-3. 'treatment_start_date' and 'end_date' specifies the date range of what the user considers to be a "patient currently undergoing treatment" to be included in the report (e.g. received a fraction within the past 7 days)
-4. 'study_start_date' is when the study was first created. Since MIM queries in a hierarchial fashion from Study->Series->Image, 'study_start_date' should be set to long before the 'treatment_start_date' to ensure no patients are erroneously overlooked (recommended at least 1 month prior). However, setting 'study_start_date' too far into the past increases the number of patient cases MIM has to search through, which significantly increases the workload on the system.
+## Installation
 
-# Setting Up Windows Task Scheduler
-1. In 'Task Scheduler', click 'Create Task'
-2. In 'Trigger' tab, click 'New' and set task to repeat 10 minutes, indefinitely
-3. In 'Actions' tab, clicl 'New'
-4. In the 'Program Script' field, provide the absolute path to 'python.exe'. Note: this could be in the conda environment
-5. In the 'Add arguments (optional)' field, provide the absolute path to 'scu_move_git_v1.py'
-6. In the 'Start in (optional)' field, provide the absolute path to this project directory
+1.  **Clone Repository**:
+    ```bash
+    git clone <repository_url>
+    cd RadOncBackupSystem
+    ```
+2.  **Create Python Environment**:
+    It's recommended to use a virtual environment (e.g., venv, conda).
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+3.  **Install Dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-# Running the CLI Application
-1. Navigate to the `src` directory.
-2. Use the following commands to interact with the CLI application:
-   - `python -m src.cli.query --config path/to/config.toml --source ARIA --mrn 12345 --study_date 20220101 --treatment_date 20220101`: Query information from data sources.
-   - `python -m src.cli.backup UCLA`: Backup DICOM data for the specified environment (e.g., UCLA, TJU).
-   - `python -m src.cli.validate path/to/config.toml UCLA`: Validate DICOM data for the specified environment (e.g., UCLA, TJU).
+## Configuration
+
+The system uses TOML configuration files located in the `src/config/` directory.
+
+1.  **DICOM Application Entities (`src/config/dicom.toml`)**:
+    *   Define AE Titles, IP addresses, and Ports for all relevant DICOM systems (sources, backup destinations).
+    *   Example:
+        ```toml
+        [ARIA_AE]
+        AETitle = "ARIA_SCU"
+        IP = "192.168.1.100"
+        Port = 104 
+        ```
+    *   **Note**: Port values must be integers.
+    *   For Mosaiq database connections, include a `[db_config]` sub-table under the Mosaiq AE entry if you are using `src/cli/backup.py` for Mosaiq SQL queries:
+        ```toml
+        [Mosaiq] # This is the source_name used in environments.toml
+        # ... other Mosaiq AE details if it also acts as a DICOM AE ...
+        db_config = { server = "MOSAIQ_DB_IP", database = "MOSAIQ_DB_NAME", username = "user", password = "pw" }
+        ```
+
+
+2.  **Environments (`src/config/environments.toml`)**:
+    *   Define different operational environments (e.g., clinical sites like UCLA, TJU_Mosaiq, TJU_MIM).
+    *   Each environment specifies its data `source` (name matching an entry in `dicom.toml`), `backup` target (name matching an entry in `dicom.toml`), and any source-specific configurations.
+    *   For Mosaiq sources, specify the ODBC driver:
+        ```toml
+        [TJU_Mosaiq]
+        source = "Mosaiq" # Must match a key in dicom.toml
+        backup = "ORTHANC_BACKUP" # Must match a key in dicom.toml
+        mosaiq_odbc_driver = "ODBC Driver 17 for SQL Server" 
+        ```
+
+3.  **Logging (`src/config/logging.toml`)**:
+    *   Configure formatters, handlers (console, file, email), and loggers for different modules.
+    *   Review and update handler settings, especially for file paths and the `SMTPHandler` (e.g., `mailhost`, `fromaddr`, `toaddrs`, `subject`) if email notifications are desired.
+
+## Running the CLI Applications
+
+All CLI scripts are located in `src/cli/` and should be run as Python modules from the project's root directory. Configuration files are typically found automatically if the scripts are run from the root, or paths can be specified.
+
+1.  **Backup Data (`backup.py`)**:
+    *   Backs up DICOM data for a specified environment.
+    *   Usage:
+        ```bash
+        python -m src.cli.backup <environment_name>
+        ```
+    *   Example:
+        ```bash
+        python -m src.cli.backup TJU_Mosaiq
+        ```
+    *   (Default config paths are `src/config/environments.toml` and `src/config/dicom.toml`)
+
+2.  **Query Data Sources (`query.py`)**:
+    *   Queries information from data sources using DICOM C-FIND.
+    *   Note: For Mosaiq, this script currently only sets up the data source; actual SQL query execution based on arguments is not implemented. It's primarily for DICOM Q/R sources.
+    *   Usage:
+        ```bash
+        python -m src.cli.query --environments_config <path_to_environments.toml> \
+                                  --dicom_config <path_to_dicom.toml> \
+                                  --environment <env_name> \
+                                  [--mrn <mrn>] [--treatment_date <date>] [--study_date <date>]
+        ```
+    *   Example:
+        ```bash
+        python -m src.cli.query --environments_config src/config/environments.toml \
+                                  --dicom_config src/config/dicom.toml \
+                                  --environment UCLA --mrn "PAT123"
+        ```
+
+3.  **Validate Data (`validate.py`)**:
+    *   Validates DICOM data consistency between a source and the Orthanc backup.
+    *   Retrieves data from the source via C-MOVE and verifies against Orthanc using its REST API.
+    *   Usage:
+        ```bash
+        python -m src.cli.validate <environment_name> \
+                                  [--env_config <path_to_environments.toml>] \
+                                  [--dicom_config <path_to_dicom.toml>] \
+                                  [--log_level <DEBUG|INFO|WARNING|ERROR>]
+        ```
+    *   Example:
+        ```bash
+        python -m src.cli.validate TJU_Mosaiq --log_level DEBUG
+        ```
+    *   (Default config paths are `src/config/environments.toml` and `src/config/dicom.toml`)
+
+
+## Flask Web Application
+
+The Flask application provides HTTP endpoints for interacting with the backup system.
+
+*   **Endpoints**:
+    *   `POST /configure_backup`: Placeholder for configuring backup settings.
+    *   `GET /view_logs?type=<log_type>`: View specific log files (e.g., `pynetdicom`, `scu`, `flask_app`).
+    *   `POST /run_recovery`: Placeholder for initiating a recovery process.
+*   **Running the App**:
+    1.  Ensure configurations in `src/config/` are set up.
+    2.  Run the application from the project root:
+        ```bash
+        python src/app.py
+        ```
+    3.  The application will be available at `http://0.0.0.0:5000` by default.
+
+## Documentation Structure
+
+Detailed documentation for different components of the system can be found in the `docs/` directory:
+-   `docs/backup_systems.md`: Information about backup system interfaces (e.g., Orthanc).
+-   `docs/data_sources.md`: Details about data source interfaces (ARIA, MIM, Mosaiq).
+-   `docs/flask_application.md`: Information specific to the Flask web application.
+-   `docs/test_files.md`: Overview of the test files and testing strategy.
+
+## Project Components
+
+### Backup Systems
+Interfaces for interacting with backup destinations.
+-   **Orthanc**: Implements storage and verification against an Orthanc server using its REST API. (See `src/backup_systems/orthanc.py`)
+
+### Data Sources
+Interfaces for querying and retrieving data from various clinical systems.
+-   **ARIA**: DICOM C-FIND/C-MOVE for ARIA systems. (See `src/data_sources/aria.py`)
+-   **MIM**: DICOM C-FIND/C-GET for MIM systems. (See `src/data_sources/mim.py`)
+-   **Mosaiq**: SQL queries (via ODBC) and DICOM C-STORE for Mosaiq. (See `src/data_sources/mosaiq.py`)
+
+### CLI Scripts
+Located in `src/cli/`:
+-   `backup.py`: Main script for initiating backups.
+-   `query.py`: Script for querying DICOM sources.
+-   `validate.py`: Script for validating data consistency between source and backup.
+
+### Configuration
+Located in `src/config/`:
+-   `dicom.toml`: DICOM AE definitions, Mosaiq DB connection details.
+-   `environments.toml`: Environment-specific settings (source, backup, ODBC driver).
+-   `logging.toml`: Logging configuration for the system.
+
+### Flask Application
+Located in `src/app.py`. Provides a web interface for system interaction.
+
+### Tests
+Unit tests are located in `src/tests/`. (This matches the `docs/test_files.md` link's implication, assuming it points to tests for these source files).
+
+---
+
+*Note: Sections related to old scripts (`scu_move_git_v1.py`, `get_treatment_report_git_v1.py`) and Windows Task Scheduler setup for these old scripts have been removed as they pertain to outdated components in the `old/` directory.*

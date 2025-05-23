@@ -1,34 +1,34 @@
 [local]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"
 
 [rvs]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"
 
 [mim_server]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"
 
 [mim_server_qr]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"
 
 [aria]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"
 
 [mosaiq]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"
 
 [orthanc]
 AETitle = ""
 IP = ""
-Port = 11112
+Port = "ENTER PORT AS INT"

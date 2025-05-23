@@ -1,142 +1,45 @@
 from . import DataSource
 import pyodbc
-from pydicom.dataset import Dataset, FileMetaDataset
-from pynetdicom import AE, evt, StoragePresentationContexts # evt and StoragePresentationContexts might be unused if only C-STORE SCU
+from pydicom.dataset import Dataset
+from pynetdicom import AE, evt, StoragePresentationContexts
 from pynetdicom.sop_class import RTBeamsTreatmentRecordStorage
-from pydicom.uid import generate_uid, ExplicitVRLittleEndian
-import logging
-
-logger = logging.getLogger(__name__)
 
 class Mosaiq(DataSource):
-    """
-    Represents the Mosaiq data source system.
-
-    This class provides methods to query data directly from the Mosaiq database
-    and to transfer (send) DICOM RT Record objects to a DICOM C-STORE SCP.
-    """
-    DEFAULT_ODBC_DRIVER = "ODBC Driver 17 for SQL Server"
-
-    def __init__(self, odbc_driver: str = None):
-        """
-        Initializes the Mosaiq data source interface.
-
-        :param odbc_driver: The name of the ODBC driver to use for connecting to the Mosaiq database.
-                            If None, defaults to "ODBC Driver 17 for SQL Server".
-        :type odbc_driver: str, optional
-        """
-        super().__init__()
-        self.odbc_driver = odbc_driver if odbc_driver is not None else self.DEFAULT_ODBC_DRIVER
-        logger.debug(f"Mosaiq DataSource initialized with ODBC driver: {self.odbc_driver}")
-
-    def query(self, sql_query: str, db_config: dict) -> list:
-        """
-        Executes a SQL query against the Mosaiq database.
-
-        :param sql_query: The SQL query string to execute.
-        :type sql_query: str
-        :param db_config: A dictionary containing database connection parameters:
-                          {'server': 'db_server_address',
-                           'database': 'db_name',
-                           'username': 'db_user',
-                           'password': 'db_password'}
-        :type db_config: dict
-        :return: A list of rows fetched from the database as a result of the query.
-                 Each row is typically a tuple of values.
-        :rtype: list
-        :raises pyodbc.Error: If database connection or query execution fails.
-        """
-        connection_string = (
-            f"DRIVER={{{self.odbc_driver}}};"
-            f"SERVER={db_config['server']};"
-            f"DATABASE={db_config['database']};"
-            f"UID={db_config['username']};"
-            f"PWD={db_config['password']}"
+    def query(self, sql_query: str, db_config: dict):
+        conn = pyodbc.connect(
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={db_config['server']};DATABASE={db_config['database']};UID={db_config['username']};PWD={db_config['password']}"
         )
-        logger.info(f"Connecting to Mosaiq database: {db_config['server']}/{db_config['database']} using driver {self.odbc_driver}")
-        try:
-            with pyodbc.connect(connection_string) as conn:
-                with conn.cursor() as cursor:
-                    logger.debug(f"Executing SQL query: {sql_query}")
-                    cursor.execute(sql_query)
-                    rows = cursor.fetchall()
-                    logger.info(f"SQL query executed successfully, fetched {len(rows)} rows.")
-                    return rows
-        except pyodbc.Error as ex:
-            sqlstate = ex.args[0]
-            logger.error(f"Mosaiq database query failed. SQLSTATE: {sqlstate}. Error: {ex}", exc_info=True)
-            raise # Re-raise the exception after logging
+        cursor = conn.cursor()
+        cursor.execute(sql_query)
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
 
-    def transfer(self, rt_record: Dataset, store_scp: dict):
-        """
-        Sends a DICOM RT Record Dataset to a C-STORE SCP.
-
-        This method takes a pydicom Dataset (assumed to be an RT Record),
-        ensures its meta information is correctly set, and then sends it
-        to the specified DICOM C-STORE SCP.
-
-        :param rt_record: The pydicom Dataset to send (e.g., an RTBeamsTreatmentRecord).
-                          This dataset should be populated with patient/study/series information.
-                          SOPClassUID and SOPInstanceUID will be set/updated by this method.
-        :type rt_record: pydicom.dataset.Dataset
-        :param store_scp: A dictionary containing the C-STORE SCP details:
-                          {'IP': 'host_ip', 'Port': port_number, 'AETitle': 'AE_TITLE'}
-        :type store_scp: dict
-        :raises TypeError: If `rt_record` is not a pydicom Dataset.
-        :raises Exception: Can raise various exceptions from pynetdicom related to
-                           network issues or DICOM protocol errors.
-        """
-        if not isinstance(rt_record, Dataset):
-            logger.error("Invalid rt_record type. Must be a pydicom Dataset.")
-            raise TypeError("rt_record must be a pydicom Dataset object")
-
-        logger.info(f"Preparing to transfer RT Record SOPInstanceUID (original/to be generated): "
-                    f"{rt_record.get('SOPInstanceUID', 'Not Set Yet')} to SCP {store_scp['AETitle']}.")
-
-        # Set/Overwrite SOP Class and Instance UIDs for this specific record instance
-        rt_record.SOPClassUID = RTBeamsTreatmentRecordStorage
-        if not hasattr(rt_record, 'SOPInstanceUID') or not rt_record.SOPInstanceUID:
-            rt_record.SOPInstanceUID = generate_uid()
-            logger.debug(f"Generated new SOPInstanceUID for RT Record: {rt_record.SOPInstanceUID}")
-        
-        # Create file_meta explicitly if it doesn't exist or needs standardization
-        if not hasattr(rt_record, 'file_meta') or rt_record.file_meta is None:
-            rt_record.file_meta = FileMetaDataset()
-            logger.debug("Created new FileMetaDataset for RT Record.")
-        
-        # Populate File Meta Information
-        rt_record.file_meta.FileMetaInformationVersion = b'\x00\x01'
-        rt_record.file_meta.MediaStorageSOPClassUID = rt_record.SOPClassUID
-        rt_record.file_meta.MediaStorageSOPInstanceUID = rt_record.SOPInstanceUID
-        rt_record.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian 
-        rt_record.file_meta.ImplementationClassUID = generate_uid(prefix='1.2.826.0.1.3680043.9.7156.1.') # Example OID
-        rt_record.file_meta.ImplementationVersionName = "PYNETDICOM_MOSAIQ_1.0"
-        
-        # Ensure dataset encoding matches the TransferSyntaxUID for pynetdicom
-        rt_record.is_little_endian = True
-        rt_record.is_implicit_VR = False # Explicit VR Little Endian
+    def transfer(self, rt_record_data: dict, store_scp: dict):
+        ds = Dataset()
+        ds.PatientID = rt_record_data['PatientID']
+        ds.PatientName = rt_record_data['PatientName']
+        ds.PatientBirthDate = rt_record_data['PatientBirthDate']
+        ds.PatientSex = rt_record_data['PatientSex']
+        ds.PhysiciansOfRecord = rt_record_data['PhysiciansOfRecord']
+        ds.StudyDescription = rt_record_data['StudyDescription']
+        ds.TreatmentDate = rt_record_data['TreatmentDate']
+        ds.NumberOfFractionsPlanned = rt_record_data['NumberOfFractionsPlanned']
+        ds.CurrentFractionNumber = rt_record_data['CurrentFractionNumber']
+        ds.TreatmentMachineName = rt_record_data['TreatmentMachineName']
+        ds.ReferencedSOPInstanceUID = rt_record_data['ReferencedSOPInstanceUID']
+        ds.StudyInstanceUID = rt_record_data['StudyInstanceUID']
+        ds.SOPClassUID = RTBeamsTreatmentRecordStorage
 
         ae = AE()
-        # Add requested presentation context for the SOP Class and Transfer Syntax being sent
-        ae.add_requested_context(rt_record.SOPClassUID, rt_record.file_meta.TransferSyntaxUID)
-        
-        logger.info(f"Attempting C-STORE association to SCP: {store_scp['AETitle']} at {store_scp['IP']}:{store_scp['Port']}")
+        ae.requested_contexts = StoragePresentationContexts
         assoc = ae.associate(store_scp['IP'], store_scp['Port'], ae_title=store_scp['AETitle'])
-        
         if assoc.is_established:
-            logger.info("C-STORE Association established.")
-            try:
-                status = assoc.send_c_store(rt_record)
-                if status:
-                    logger.info(f"C-STORE request completed. Status: 0x{status.Status:04X} ({status.StatusMeaning}).")
-                    if hasattr(status, 'ErrorComment') and status.ErrorComment:
-                        logger.warning(f"C-STORE Error Comment: {status.ErrorComment}")
-                else:
-                    logger.error("C-STORE request failed: No status returned (connection timed out or aborted).")
-            except Exception as e:
-                logger.error(f"Exception during C-STORE operation: {e}", exc_info=True)
-            finally:
-                logger.debug("Releasing C-STORE association.")
-                assoc.release()
+            status = assoc.send_c_store(ds)
+            if status:
+                print('C-STORE request status: 0x{0:04x}'.format(status.Status))
+            else:
+                print('Connection timed out, was aborted or received invalid response')
+            assoc.release()
         else:
-            logger.error(f"C-STORE Association rejected, aborted or never connected to SCP: {store_scp['AETitle']}.")
+            print('Association rejected, aborted or never connected')
