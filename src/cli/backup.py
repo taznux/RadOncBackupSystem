@@ -10,8 +10,8 @@ def handle_store(event):
     """Handle a C-STORE service request"""
     ds = event.dataset
     ds.file_meta = event.file_meta
-    global moved_ds
-    moved_ds = ds
+    # global moved_ds # Unused
+    # moved_ds = ds # Unused
     return 0x0000
 
 def backup_data(environment):
@@ -28,7 +28,7 @@ def backup_data(environment):
     else:
         raise ValueError("Invalid source system")
 
-    backup = Orthanc()
+    # backup = Orthanc() # Unused variable
 
     if env_config['source'] == 'Mosaiq':
         sql_query = "SELECT * FROM RTRECORDS WHERE TreatmentDate = CURDATE()"

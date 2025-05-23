@@ -38,7 +38,15 @@ def main():
     query_dataset.Modality = 'RTRECORD'
     query_dataset.SeriesInstanceUID = ''
     query_dataset.PatientID = args.mrn
-    query_dataset.StudyDate = args.study_date
+    # query_dataset.StudyDate = args.study_date # Replaced by logic below
+
+    if args.treatment_date:
+        query_dataset.StudyDate = args.treatment_date
+    elif args.study_date:
+        query_dataset.StudyDate = args.study_date
+    else:
+        query_dataset.StudyDate = ''  # Wildcard if no date is provided
+
     query_dataset.StudyInstanceUID = ''
 
     uids = query_data_source(args.source, query_dataset, qr_scp)

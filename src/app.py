@@ -10,7 +10,8 @@ with open('config/dicom.toml', 'rb') as f:
     dicom_config = tomllib.load(f)
 
 with open('config/logging.toml', 'rb') as f:
-    logging.config.dictConfig(tomllib.load(f))
+    logging_config = tomllib.load(f)
+    logging.config.dictConfig(dict(logging_config))
 
 with open('config/environments.toml', 'rb') as f:
     environments_config = tomllib.load(f)

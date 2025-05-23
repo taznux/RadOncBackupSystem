@@ -7,17 +7,27 @@ class MIM(DataSource):
     def query(self, query_dataset: Dataset, qr_scp: dict):
         ae = AE()
         ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
+        uids = set()  # Initialize uids to prevent UnboundLocalError
         assoc = ae.associate(qr_scp['IP'], qr_scp['Port'], ae_title=qr_scp['AETitle'])
         if assoc.is_established:
-            responses = assoc.send_c_find(query_dataset, StudyRootQueryRetrieveInformationModelFind)
-            uids = set()
-            for (status, identifier) in responses:
-                if not status:
-                    print('Connection timed out, was aborted or received invalid response')
-                    print('C-FIND query status: 0x{0:04X}'.format(status.Status))
-                elif identifier:
-                    uids.add(identifier.SOPInstanceUID)
-            assoc.release()
+            try:
+                responses = assoc.send_c_find(query_dataset, StudyRootQueryRetrieveInformationModelFind)
+                for (status, identifier) in responses:
+                    if status and status.Status == 0xFF00:  # Pending status, continue
+                        if identifier:
+                            uids.add(identifier.SOPInstanceUID)
+                    elif status and status.Status == 0x0000:  # Success status
+                        if identifier:
+                            uids.add(identifier.SOPInstanceUID)
+                    else:  # Failure or unknown status
+                        print('C-FIND query failed or connection issue.')
+                        if status:
+                            print(f'C-FIND query status: 0x{status.Status:04X}')
+                        else:
+                            print('No status returned.')
+                        # Potentially break or handle error more robustly
+            finally:
+                assoc.release()
         else:
             print('Association rejected, aborted or never connected')
         return uids
