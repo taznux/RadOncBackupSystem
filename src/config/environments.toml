@@ -2,7 +2,12 @@
 source = "ARIA"
 backup = "Orthanc"
 
-[TJU]
-source1 = "Mosaiq"
-source2 = "MIM"
+# Changed [TJU] to [TJU_Mosaiq] and [TJU_MIM] to handle sources separately
+[TJU_Mosaiq]
+source = "Mosaiq" # Standardized to 'source' key
+mosaiq_odbc_driver = "ODBC Driver 17 for SQL Server"
+backup = "Orthanc"
+
+[TJU_MIM]
+source = "MIM" # Standardized to 'source' key
 backup = "Orthanc"
