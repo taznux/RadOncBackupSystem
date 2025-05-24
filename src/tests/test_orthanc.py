@@ -82,7 +82,7 @@ class TestOrthanc(unittest.TestCase):
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
                json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
-               json=[{'ID': 'found-id'}], # Orthanc /tools/find returns a list
+               text='[{"ID": "found-id"}]', # Orthanc /tools/find returns a list
                status_code=200)
         m.get(f"{self.orthanc.orthanc_url}/instances/found-id/file", 
               content=original_dicom_bytes, 
@@ -103,8 +103,9 @@ class TestOrthanc(unittest.TestCase):
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
                json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
-               json=[], # Orthanc /tools/find returns an empty list for not found
-               status_code=200)        
+               text='[]', # Orthanc /tools/find returns an empty list for not found
+               status_code=200)
+        
         result = self.orthanc.verify(original_dicom_bytes)
         self.assertFalse(result)
 
@@ -122,7 +123,7 @@ class TestOrthanc(unittest.TestCase):
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
                json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
-               json=[{'ID': 'found-id-for-mismatch'}],
+               text='[{"ID": "found-id-for-mismatch"}]',
                status_code=200)
         m.get(f"{self.orthanc.orthanc_url}/instances/found-id-for-mismatch/file", 
               content=mismatch_dicom_bytes, 
@@ -160,7 +161,7 @@ class TestOrthanc(unittest.TestCase):
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
                json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
-               json=[{'ID': 'found-id-for-get-error'}],
+               text='[{"ID": "found-id-for-get-error"}]',
                status_code=200)
         m.get(f"{self.orthanc.orthanc_url}/instances/found-id-for-get-error/file", 
               status_code=500) # Simulate server error on file retrieval

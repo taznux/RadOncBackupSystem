@@ -42,7 +42,7 @@ class TestMosaiq(unittest.TestCase):
         self.mock_store_scp_server.start()
 
         self.store_scp = { # This is the C-STORE SCP details passed to mosaiq.transfer
-            'AETitle': mock_store_scp_ae_title,
+            'AETitle': mock_store_scp_ae_title, # Updated to use the shortened AE Title
             'IP': mock_store_scp_host,
             'Port': mock_store_scp_port
         }
