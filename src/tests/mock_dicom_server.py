@@ -9,6 +9,7 @@ from pynetdicom.sop_class import (
 )
 from pynetdicom.presentation import PresentationContext, StoragePresentationContexts
 
+
 # Configure basic logging for the mock server
 logger = logging.getLogger('pynetdicom') # Using pynetdicom's logger for consistency or use __name__
 # logger.setLevel(logging.INFO) # Or DEBUG for more verbosity
@@ -288,3 +289,4 @@ if __name__ == '__main__':
     print(f"Received datasets ({len(mock_server.received_datasets)}):")
     for ds in mock_server.received_datasets:
         print(ds.PatientID, ds.SOPInstanceUID)
+
