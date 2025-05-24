@@ -125,10 +125,16 @@ class Mosaiq(DataSource):
         
         if assoc.is_established:
             logger.info("C-STORE Association established.")
+            # Log accepted presentation contexts
+            if assoc.accepted_contexts:
+                for context in assoc.accepted_contexts:
+                    logger.info(f"Accepted Presentation Context: Abstract Syntax {context.abstract_syntax}, Transfer Syntax {context.transfer_syntax}")
+            else:
+                logger.warning("No presentation contexts accepted by SCP!")
             try:
                 status = assoc.send_c_store(rt_record)
                 if status:
-                    logger.info(f"C-STORE request completed. Status: 0x{status.Status:04X} ({status.StatusMeaning}).")
+                    logger.info(f"C-STORE request completed. Status: 0x{status.Status:04X}.")
                     if hasattr(status, 'ErrorComment') and status.ErrorComment:
                         logger.warning(f"C-STORE Error Comment: {status.ErrorComment}")
                 else:

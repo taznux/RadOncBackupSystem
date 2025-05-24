@@ -80,7 +80,6 @@ class TestOrthanc(unittest.TestCase):
             "Query": {"SOPInstanceUID": sop_uid_for_verify}
         }
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
-               json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
                text='[{"ID": "found-id"}]', # Orthanc /tools/find returns a list
                status_code=200)
@@ -101,7 +100,6 @@ class TestOrthanc(unittest.TestCase):
             "Query": {"SOPInstanceUID": sop_uid_for_verify}
         }
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
-               json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
                text='[]', # Orthanc /tools/find returns an empty list for not found
                status_code=200)
@@ -121,7 +119,6 @@ class TestOrthanc(unittest.TestCase):
             "Query": {"SOPInstanceUID": sop_uid_for_verify}
         }
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
-               json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
                text='[{"ID": "found-id-for-mismatch"}]',
                status_code=200)
@@ -159,7 +156,6 @@ class TestOrthanc(unittest.TestCase):
             "Query": {"SOPInstanceUID": sop_uid_for_verify}
         }
         m.post(f"{self.orthanc.orthanc_url}/tools/find",
-               json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
                text='[{"ID": "found-id-for-get-error"}]',
                status_code=200)
