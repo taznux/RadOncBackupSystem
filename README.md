@@ -118,6 +118,9 @@ The unit tests for this project are designed to run in isolation, without requir
 
 All test-specific dependencies, such as `requests-mock`, are listed in the `requirements.txt` file. Unit tests are located in the `src/tests/` directory. For an overview of the test files and specific strategies, refer to `docs/test_files.md`.
 
+Before running the tests, ensure all dependencies are installed or updated by running: `pip install -r requirements.txt`
+
+
 To run the tests, you can use Python's `unittest` module from the project root:
 ```bash
 python -m unittest discover src/tests
