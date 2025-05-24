@@ -109,6 +109,20 @@ All CLI scripts are located in `src/cli/` and should be run as Python modules fr
     *   (Default config paths are `src/config/environments.toml` and `src/config/dicom.toml`)
 
 
+## Testing
+
+The unit tests for this project are designed to run in isolation, without requiring dependencies on external DICOM services or live Orthanc instances. This is achieved through:
+
+-   **Mock DICOM Services**: For testing data source interactions (ARIA, MIM, and the DICOM C-STORE part of Mosaiq), an internal mock DICOM server (`MockDicomServer`) is used. This server simulates C-FIND, C-MOVE, and C-STORE responses, allowing verification of the DICOM communication logic within the respective data source classes.
+-   **HTTP Mocking**: For testing the Orthanc backup system interface, the `requests-mock` library is used. This allows simulation of Orthanc's REST API responses, ensuring that the `Orthanc.store()` and `Orthanc.verify()` methods correctly handle various scenarios (e.g., success, failure, data mismatch).
+
+All test-specific dependencies, such as `requests-mock`, are listed in the `requirements.txt` file. Unit tests are located in the `src/tests/` directory. For an overview of the test files and specific strategies, refer to `docs/test_files.md`.
+
+To run the tests, you can use Python's `unittest` module from the project root:
+```bash
+python -m unittest discover src/tests
+```
+
 ## Flask Web Application
 
 The Flask application provides HTTP endpoints for interacting with the backup system.
@@ -159,9 +173,6 @@ Located in `src/config/`:
 
 ### Flask Application
 Located in `src/app.py`. Provides a web interface for system interaction.
-
-### Tests
-Unit tests are located in `src/tests/`. (This matches the `docs/test_files.md` link's implication, assuming it points to tests for these source files).
 
 ---
 
