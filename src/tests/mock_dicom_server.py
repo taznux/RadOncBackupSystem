@@ -5,10 +5,10 @@ from pydicom.dataset import Dataset
 from pynetdicom import AE, evt
 from pynetdicom.sop_class import (
     StudyRootQueryRetrieveInformationModelFind,
-    StudyRootQueryRetrieveInformationModelMove, # Added
-    StoragePresentationContexts,
+    StudyRootQueryRetrieveInformationModelMove,
 )
-from pynetdicom.presentation import PresentationContext
+from pynetdicom.presentation import PresentationContext, StoragePresentationContexts
+
 
 # Configure basic logging for the mock server
 logger = logging.getLogger('pynetdicom') # Using pynetdicom's logger for consistency or use __name__
