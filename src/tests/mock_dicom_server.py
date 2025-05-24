@@ -8,6 +8,7 @@ from pynetdicom.sop_class import (
     StudyRootQueryRetrieveInformationModelMove,
 )
 from pynetdicom.presentation import PresentationContext, StoragePresentationContexts
+from pydicom.uid import PYDICOM_IMPLEMENTATION_UID, ImplicitVRLittleEndian # Added for fallback
 
 
 # Configure basic logging for the mock server
@@ -165,11 +166,28 @@ class MockDicomServer:
         if not hasattr(ds, 'file_meta'):
             ds.file_meta = Dataset()
             # Populate with common UIDs if missing, or derive from context
-            ds.file_meta.MediaStorageSOPClassUID = event.context.sop_class.UID
-            ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-            ds.file_meta.ImplementationClassUID = event.assoc.ae.implementation_class_uid
-            ds.file_meta.TransferSyntaxUID = event.context.transfer_syntax[0] # Assuming one transfer syntax
+            ds.file_meta.MediaStorageSOPClassUID = event.context.abstract_syntax # Corrected
+            ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'UnknownUID_FileMetaCreation' # Ensure this is present in ds
+            
+            # Use the mock server's own implementation class UID
+            if hasattr(self.ae, 'implementation_class_uid'):
+                 ds.file_meta.ImplementationClassUID = self.ae.implementation_class_uid
+            else: # Fallback if not set on AE (should be)
+                # from pydicom.uid import PYDICOM_IMPLEMENTATION_UID # pydicom's default - import moved to top
+                ds.file_meta.ImplementationClassUID = PYDICOM_IMPLEMENTATION_UID
 
+            if event.context.transfer_syntax: # Should be present from accepted context
+                ds.file_meta.TransferSyntaxUID = event.context.transfer_syntax[0]
+            else:
+                # Fallback, though ideally context should always have a negotiated transfer syntax
+                # from pydicom.uid import ImplicitVRLittleEndian # A common default - import moved to top
+                ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+            
+            # Add a log to indicate file_meta was created
+            logger.debug(f"MockDicomServer: Created missing file_meta for SOPInstanceUID: {ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'Unknown'}")
+
+        # Add a more general log for any stored dataset
+        logger.info(f"MockDicomServer: Dataset received for SOPInstanceUID: {ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'Unknown'}. Adding to received_datasets list.")
         self.received_datasets.append(ds)
         return 0x0000  # Success status
 
@@ -186,8 +204,8 @@ class MockDicomServer:
         ]
         
         # Configure pynetdicom logging for more insights if needed
-        # from pynetdicom import _config
-        # _config.LOG_HANDLER_LEVEL = 'DEBUG' # or 'INFO'
+        from pynetdicom import _config
+        _config.LOG_HANDLER_LEVEL = 'DEBUG' # or 'INFO'
         # _config.LOG_HANDLER_BYTES_LIMIT = 1024 * 10 # Limit log output size for byte strings
 
         self._server_instance = self.ae.start_server(
