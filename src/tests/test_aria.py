@@ -108,8 +108,7 @@ class TestARIA(unittest.TestCase):
             self.aria.transfer(
                 self.move_dataset, 
                 self.qr_scp, 
-                self.store_scp['AETitle'], 
-                self.store_scp['Port'], 
+                self.store_scp, # Pass the whole dictionary
                 handle_store
             )
         except Exception as e:
