@@ -1,4 +1,15 @@
 import unittest
+import logging
+# Ensure pynetdicom DEBUG logs are output to console for capture
+logger_pynetdicom = logging.getLogger('pynetdicom')
+logger_pynetdicom.setLevel(logging.DEBUG)
+if not logger_pynetdicom.hasHandlers(): # Add handler if none exist, to ensure output
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger_pynetdicom.addHandler(handler)
+    logger_pynetdicom.propagate = False # Avoid duplicate logs if root logger also has a handler
+
 from src.data_sources.mosaiq import Mosaiq
 from src.tests.mock_dicom_server import MockDicomServer # Added
 from pydicom.dataset import Dataset # Added (potentially needed for assertions)
