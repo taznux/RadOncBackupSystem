@@ -104,8 +104,7 @@ class TestOrthanc(unittest.TestCase):
                json=expected_find_payload,  # Matches the REQUEST body
                # Defines the RESPONSE body:
                json=[], # Orthanc /tools/find returns an empty list for not found
-               status_code=200)
-        
+               status_code=200)        
         result = self.orthanc.verify(original_dicom_bytes)
         self.assertFalse(result)
 
