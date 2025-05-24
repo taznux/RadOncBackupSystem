@@ -61,7 +61,7 @@ class TestMIM(unittest.TestCase):
         # This is the configuration for the internal C-STORE SCP that MIM.transfer will start.
         # The C-MOVE SCP (mock_qr_scp_server) will be told to send files to this AET.
         self.store_scp = {
-            'AETitle': 'MIM_INTERNAL_STORE_SCP', # AE Title for MIM's internal C-STORE SCP
+            'AETitle': 'MIM_STORE_SCP', # Shortened AE Title for MIM's internal C-STORE SCP
             'IP': '127.0.0.1', # IP where MIM's internal C-STORE SCP will listen
             'Port': 11115 # Port for MIM's internal C-STORE SCP, must be distinct
         }

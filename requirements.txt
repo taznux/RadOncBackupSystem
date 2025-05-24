@@ -8,6 +8,7 @@ pandas==2.2.2
 pydicom==2.4.4
 pynetdicom==2.0.2
 python-dateutil==2.9.0.post0
+pyodbc==5.1.0
 pytz==2024.1
 requests-mock==1.11.0
 six==1.16.0

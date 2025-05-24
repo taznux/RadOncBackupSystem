@@ -15,25 +15,25 @@ class TestMosaiq(unittest.TestCase):
             'username': 'user',
             'password': 'password'
         }
-        self.rt_record_data = {
-            'PatientID': '12345',
-            'PatientName': 'John Doe',
-            'PatientBirthDate': '19700101',
-            'PatientSex': 'M',
-            'PhysiciansOfRecord': 'Dr. Smith',
-            'StudyDescription': 'Radiation Therapy',
-            'TreatmentDate': '20220101',
-            'NumberOfFractionsPlanned': 30,
-            'CurrentFractionNumber': 5,
-            'TreatmentMachineName': 'Machine1',
-            'ReferencedSOPInstanceUID': '1.2.3.4.5.6.7.8.9.0',
-            'StudyInstanceUID': '1.2.3.4.5.6.7.8.9.1'
-        }
+        
+        self.rt_record_data = Dataset()
+        self.rt_record_data.PatientID = '12345'
+        self.rt_record_data.PatientName = 'John Doe'
+        self.rt_record_data.PatientBirthDate = '19700101'
+        self.rt_record_data.PatientSex = 'M'
+        self.rt_record_data.PhysiciansOfRecord = 'Dr. Smith'
+        self.rt_record_data.StudyDescription = 'Radiation Therapy'
+        self.rt_record_data.TreatmentDate = '20220101'
+        self.rt_record_data.NumberOfFractionsPlanned = 30
+        self.rt_record_data.CurrentFractionNumber = 5
+        self.rt_record_data.TreatmentMachineName = 'Machine1'
+        self.rt_record_data.ReferencedSOPInstanceUID = '1.2.3.4.5.6.7.8.9.0'
+        self.rt_record_data.StudyInstanceUID = '1.2.3.4.5.6.7.8.9.1'
 
         # Mock Store SCP Server Setup
         mock_store_scp_host = '127.0.0.1'
         mock_store_scp_port = 11116 # Distinct port for Mosaiq store tests
-        mock_store_scp_ae_title = 'MOCK_MOSAIQ_STORE_SCP'
+        mock_store_scp_ae_title = 'MOSAIQ_STORE_SCP' # Shortened AE Title
         self.mock_store_scp_server = MockDicomServer(
             host=mock_store_scp_host, 
             port=mock_store_scp_port, 
@@ -74,11 +74,11 @@ class TestMosaiq(unittest.TestCase):
         # This depends on how Mosaiq.transfer creates the DICOM dataset
         if self.mock_store_scp_server.received_datasets:
             received_ds = self.mock_store_scp_server.received_datasets[0]
-            self.assertEqual(received_ds.PatientID, self.rt_record_data['PatientID'])
+            self.assertEqual(received_ds.PatientID, self.rt_record_data.PatientID) # Changed to attribute access
             # Add more assertions here if Mosaiq.transfer maps them and they are critical
             # For example:
-            # self.assertEqual(received_ds.PatientName, self.rt_record_data['PatientName'])
-            # self.assertEqual(received_ds.StudyInstanceUID, self.rt_record_data['StudyInstanceUID'])
+            # self.assertEqual(received_ds.PatientName, self.rt_record_data.PatientName)
+            # self.assertEqual(received_ds.StudyInstanceUID, self.rt_record_data.StudyInstanceUID)
             # SOPClassUID should be RT Beams Treatment Record IOD or similar
             # self.assertEqual(received_ds.SOPClassUID, '1.2.840.10008.5.1.4.1.1.481.4') # RT Beams Treatment Record Storage
 

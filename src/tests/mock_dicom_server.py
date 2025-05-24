@@ -290,4 +290,3 @@ if __name__ == '__main__':
     for ds in mock_server.received_datasets:
         print(ds.PatientID, ds.SOPInstanceUID)
 
-```

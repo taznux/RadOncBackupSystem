@@ -105,7 +105,13 @@ class TestARIA(unittest.TestCase):
         # The current self.move_dataset is set to 'IMAGE' level with a SOPInstanceUID.
 
         try:
-            self.aria.transfer(self.move_dataset, self.qr_scp, self.store_scp, handle_store)
+            self.aria.transfer(
+                self.move_dataset, 
+                self.qr_scp, 
+                self.store_scp['AETitle'], 
+                self.store_scp['Port'], 
+                handle_store
+            )
         except Exception as e:
             self.fail(f"ARIA.transfer raised an exception: {e}")
 
