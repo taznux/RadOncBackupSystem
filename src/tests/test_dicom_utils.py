@@ -1,499 +1,664 @@
 import unittest
-from unittest.mock import patch, MagicMock, call, ANY
+from unittest.mock import patch, MagicMock, ANY # call removed as it was unused
 import sys
 from io import StringIO
 import os
+import argparse  # For creating Namespace objects for helpers
 
-# To allow importing from src.cli
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# Adjust path to import from src
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pydicom.dataset import Dataset
-from pynetdicom.status import Status # For creating status objects
-from pynetdicom.sop_class import PatientRootQueryRetrieveInformationModelMove, StudyRootQueryRetrieveInformationModelMove
+from pynetdicom import AE  # For type hinting in tests if needed
+from pynetdicom.association import Association  # For type hinting
+from pynetdicom.sop_class import (
+    VerificationSOPClass,
+    PatientRootQueryRetrieveInformationModelFind,
+    StudyRootQueryRetrieveInformationModelFind,
+    PatientRootQueryRetrieveInformationModelMove,
+    StudyRootQueryRetrieveInformationModelMove,
+    RTPlanStorage,  # Example for _get_storage_contexts
+)
+from pynetdicom.status import (
+    Status as PynetdicomStatus,
+)  # To avoid conflict with local Status
 
-# Import the main function from the script to be tested
-from src.cli.dicom_utils import main as dicom_utils_main, handle_store_response, handle_move_response, handle_find_response
+# Import the main function and helpers from the script to be tested
+from src.cli.dicom_utils import (
+    main as dicom_utils_main,
+    _handle_echo_scu,  # Testing main handlers that call helpers
+    _handle_find_scu,
+    _handle_move_scu,
+    _handle_store_scu,
+    _on_find_response,  # Response handlers are now directly testable
+    _on_move_response,
+    _on_store_response,
+    _establish_association,  # Test helper functions directly
+    _build_find_query_dataset,
+    _get_find_model,
+    _build_move_identifier_dataset,
+    _get_move_model,
+    _get_dicom_files_from_path,
+    _get_storage_contexts,
+    DicomConnectionError,  # Custom exceptions
+    DicomOperationError,
+    InvalidInputError,
+    # DicomUtilsError, # Base class, not directly asserted in these tests
+)
+from pynetdicom import evt  # For event objects
 
-# Mock pynetdicom AE and Association
-# It's often easier to patch 'pynetdicom.AE' in the module where it's USED.
-# So, we'll patch 'src.cli.dicom_utils.AE'
-@patch('src.cli.dicom_utils.AE')
-class TestDicomUtilsEcho(unittest.TestCase):
 
+# Patching strategy:
+# - For CLI tests (calling dicom_utils_main): patch helpers like _establish_association
+# - For direct tests of SCU handlers (_handle_echo_scu, etc.): patch _establish_association
+# - For direct tests of helper functions: patch underlying pynetdicom.AE or os functions
+@patch("src.cli.dicom_utils._establish_association")
+class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
     def setUp(self):
-        self.held_stdout = sys.stdout
-        self.captured_output = StringIO()
-        sys.stdout = self.captured_output # Redirect stdout
+        self.args = argparse.Namespace(
+            aet="ECHO_SCU",
+            aec="ECHO_SCP",
+            host="echohost",
+            port=104,
+            verbose=False,
+        )
+        self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
+        self.addCleanup(patch.stopall) # Replaces self.tearDown for stopping patches
 
-        # Common args for all tests
-        self.common_cli_args = ['--aec', 'TEST_SCP', '--host', 'localhost', '--port', '11112']
+    def test_handle_echo_scu_success(self, mock_establish_association):
+        mock_assoc = MagicMock(spec=Association)
+        mock_assoc.send_c_echo.return_value = MagicMock(
+            Status=PynetdicomStatus.Success
+        )
+        mock_establish_association.return_value = mock_assoc
 
-    def tearDown(self):
-        sys.stdout = self.held_stdout # Restore stdout
-        patch.stopall() # Ensure all patches are stopped
+        _handle_echo_scu(self.args)
 
-    def test_echo_success(self, mock_ae_class):
-        """Test C-ECHO successful operation."""
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        mock_assoc.send_c_echo.return_value = MagicMock(Status=0x0000) # Success status
-
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-
-        args = ['echo'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-
-        output = self.captured_output.getvalue()
-        self.assertIn("Performing C-ECHO to TEST_SCP at localhost:11112", output)
-        self.assertIn("Association established.", output)
-        self.assertIn("C-ECHO status: 0x0000 (Success)", output) # Check for success message
-        self.assertIn("Association released.", output)
-        mock_ae_instance.add_requested_context.assert_called_once() # VerificationSOPClass
-        mock_ae_instance.associate.assert_called_once_with('localhost', 11112, ae_title='TEST_SCP')
+        mock_establish_association.assert_called_once_with(
+            self.args.aet,
+            self.args.aec,
+            self.args.host,
+            self.args.port,
+            [VerificationSOPClass],
+        )
         mock_assoc.send_c_echo.assert_called_once()
         mock_assoc.release.assert_called_once()
+        self.assertIn("C-ECHO status: 0x0000 (Success)", self.mock_stdout.getvalue())
 
-    def test_echo_association_failed(self, mock_ae_class):
-        """Test C-ECHO when association fails."""
-        mock_assoc = MagicMock()
+    def test_handle_echo_scu_association_fails(self, mock_establish_association):
+        mock_establish_association.side_effect = DicomConnectionError(
+            "Connection failed"
+        )
+
+        with self.assertRaises(DicomConnectionError): # Expect error to be re-raised
+            _handle_echo_scu(self.args)
+        
+        self.assertIn(
+            "C-ECHO operation failed: Connection failed", self.mock_stdout.getvalue()
+        )
+        mock_establish_association.assert_called_once()
+        # Ensure send_c_echo is not called if association failed before that
+        # Accessing return_value of a mock that raised an exception needs careful handling
+        if mock_establish_association.return_value.is_established: # Should not be true
+             mock_establish_association.return_value.send_c_echo.assert_not_called()
+
+
+    def test_handle_echo_scu_echo_failure_status(self, mock_establish_association):
+        mock_assoc = MagicMock(spec=Association)
+        mock_assoc.send_c_echo.return_value = MagicMock(
+            Status=0x0122
+        )  # e.g. SOP Class Not Supported
+        mock_establish_association.return_value = mock_assoc
+
+        with self.assertRaises(DicomOperationError):
+            _handle_echo_scu(self.args)
+
+        self.assertIn(
+            "C-ECHO failed with status 0x122", self.mock_stdout.getvalue()
+        )
+        mock_assoc.release.assert_called_once()
+
+    def test_handle_echo_scu_no_response(self, mock_establish_association):
+        mock_assoc = MagicMock(spec=Association)
+        mock_assoc.send_c_echo.return_value = None  # No status object returned
+        mock_establish_association.return_value = mock_assoc
+
+        with self.assertRaises(DicomOperationError):
+             _handle_echo_scu(self.args)
+
+        self.assertIn(
+            "C-ECHO failed: No response status from SCP", self.mock_stdout.getvalue()
+        )
+        mock_assoc.release.assert_called_once()
+
+
+@patch("src.cli.dicom_utils._establish_association")
+class TestDicomUtilsFindSCUHandler(unittest.TestCase):
+    def setUp(self):
+        self.args = argparse.Namespace(
+            aet="FIND_SCU",
+            aec="FIND_SCP",
+            host="findhost",
+            port=105,
+            query_level="STUDY",
+            patient_id="*",
+            study_uid="",
+            series_uid="",
+            modality=None,
+            verbose=False,
+        )
+        self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
+        self.addCleanup(patch.stopall)
+
+
+    @patch("src.cli.dicom_utils._on_find_response")  # Mock the callback
+    def test_handle_find_scu_success(
+        self, mock_on_find_response, mock_establish_association
+    ):
+        mock_assoc = MagicMock(spec=Association)
+        mock_establish_association.return_value = mock_assoc
+
+        ds1 = Dataset()
+        ds1.PatientID = "123"
+        status_pending = MagicMock(Status=PynetdicomStatus.Pending)
+        status_success = MagicMock(Status=PynetdicomStatus.Success)
+        mock_assoc.send_c_find.return_value = iter(
+            [(status_pending, ds1), (status_success, None)]
+        )
+
+        mock_on_find_response.side_effect = (
+            lambda s, i, aet: s.Status != PynetdicomStatus.Success
+        )
+
+        _handle_find_scu(self.args)
+
+        mock_establish_association.assert_called_once()
+        mock_assoc.send_c_find.assert_called_once()
+        self.assertEqual(mock_on_find_response.call_count, 2)
+        mock_assoc.release.assert_called_once()
+        self.assertIn("Association released.", self.mock_stdout.getvalue())
+    
+    @patch("src.cli.dicom_utils._on_find_response")
+    def test_handle_find_scu_failure_in_response(self, mock_on_find_response, mock_establish_association):
+        mock_assoc = MagicMock(spec=Association)
+        mock_establish_association.return_value = mock_assoc
+
+        status_failure = MagicMock(Status=PynetdicomStatus.AE_TITLE_NOT_RECOGNIZED)
+        mock_assoc.send_c_find.return_value = iter([(status_failure, None)])
+        
+        # _on_find_response returns False on failure, which should trigger DicomOperationError
+        mock_on_find_response.return_value = False 
+
+        with self.assertRaises(DicomOperationError):
+            _handle_find_scu(self.args)
+        
+        mock_on_find_response.assert_called_once_with(status_failure, None, self.args.aec)
+        self.assertIn("C-FIND operation failed", self.mock_stdout.getvalue())
+
+
+@patch("src.cli.dicom_utils._establish_association")
+class TestDicomUtilsMoveSCUHandler(unittest.TestCase):
+    def setUp(self):
+        self.args = argparse.Namespace(
+            aet="MOVE_SCU",
+            aec="MOVE_SCP",
+            host="movehost",
+            port=106,
+            move_dest_aet="DEST_AET",
+            query_level="STUDY",
+            patient_id="PAT01",
+            study_uid="1.2.3",
+            series_uid="",
+            verbose=False,
+        )
+        self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
+        self.addCleanup(patch.stopall)
+
+
+    @patch("src.cli.dicom_utils._on_move_response")
+    def test_handle_move_scu_success(
+        self, mock_on_move_response_final, mock_establish_association
+    ):
+        mock_assoc = MagicMock(spec=Association)
+        mock_establish_association.return_value = mock_assoc
+
+        status_success = MagicMock(Status=PynetdicomStatus.Success)
+        mock_assoc.send_c_move.return_value = iter([(status_success, None)])
+
+        _handle_move_scu(self.args)
+
+        mock_establish_association.assert_called_once()
+        mock_assoc.send_c_move.assert_called_once()
+        mock_on_move_response_final.assert_called_once()
+        self.assertEqual(
+            mock_on_move_response_final.call_args[0][0].status.Status,
+            PynetdicomStatus.Success,
+        )
+        mock_assoc.release.assert_called_once()
+        self.assertIn("Association released.", self.mock_stdout.getvalue())
+
+    def test_handle_move_scu_image_level_error(self, mock_establish_association):
+        self.args.query_level = "IMAGE"
+        # This should log an error but not raise an exception that stops main() with error code
+        # as per current _handle_move_scu implementation.
+        _handle_move_scu(self.args) 
+        self.assertIn(
+            "C-MOVE at IMAGE level is not typically supported",
+            self.mock_stdout.getvalue(),
+        )
+        mock_establish_association.assert_not_called()
+
+
+@patch("src.cli.dicom_utils._get_dicom_files_from_path")
+@patch("src.cli.dicom_utils._establish_association")
+class TestDicomUtilsStoreSCUHandler(unittest.TestCase):
+    def setUp(self):
+        self.args = argparse.Namespace(
+            aet="STORE_SCU",
+            aec="STORE_SCP",
+            host="storehost",
+            port=107,
+            filepath="/dummy/path",
+            verbose=False,
+        )
+        self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
+        self.mock_dcmread = patch("src.cli.dicom_utils.dcmread").start()
+        self.addCleanup(patch.stopall)
+
+
+    def test_handle_store_scu_success_single_file(
+        self, mock_establish_association, mock_get_files
+    ):
+        mock_assoc = MagicMock(spec=Association)
+        # Simulate accepted contexts for the SOP Class warning check
+        accepted_ctx = MagicMock()
+        accepted_ctx.abstract_syntax = "1.2.3.CTUID"
+        mock_assoc.accepted_contexts = [accepted_ctx]
+        mock_establish_association.return_value = mock_assoc
+
+        dicom_file_path = "/dummy/ct.dcm"
+        mock_get_files.return_value = [dicom_file_path]
+
+        mock_ds = Dataset()
+        mock_ds.SOPClassUID = "1.2.3.CTUID"  # Matches accepted context
+        self.mock_dcmread.return_value = mock_ds
+
+        mock_assoc.send_c_store.return_value = MagicMock(
+            Status=PynetdicomStatus.Success
+        )
+
+        _handle_store_scu(self.args)
+
+        mock_get_files.assert_called_once_with(self.args.filepath)
+        mock_establish_association.assert_called_once()
+        self.mock_dcmread.assert_called_once_with(dicom_file_path)
+        mock_assoc.send_c_store.assert_called_once_with(mock_ds)
+        mock_assoc.release.assert_called_once()
+        self.assertIn(
+            "Finished sending files. 1/1 requests were processed",
+            self.mock_stdout.getvalue(),
+        )
+
+    def test_handle_store_scu_invalid_path(
+        self, mock_establish_association, mock_get_files
+    ):
+        mock_get_files.side_effect = InvalidInputError("Path not found")
+        with self.assertRaises(InvalidInputError): # Expect error to be re-raised
+            _handle_store_scu(self.args)
+        self.assertIn(
+            "C-STORE setup failed: Path not found", self.mock_stdout.getvalue()
+        )
+        mock_establish_association.assert_not_called()
+
+    def test_handle_store_scu_dimse_error(self, mock_establish_association, mock_get_files):
+        mock_assoc = MagicMock(spec=Association)
+        mock_assoc.accepted_contexts = [MagicMock(abstract_syntax='1.2.3.CTUID')]
+        mock_establish_association.return_value = mock_assoc
+        
+        dicom_file_path = "/dummy/ct_fail.dcm"
+        mock_get_files.return_value = [dicom_file_path]
+        
+        mock_ds = Dataset()
+        mock_ds.SOPClassUID = "1.2.3.CTUID"
+        self.mock_dcmread.return_value = mock_ds
+        
+        # Simulate DIMSE service failure
+        mock_assoc.send_c_store.return_value = MagicMock(Status=0xA700) # Example error
+
+        with self.assertRaises(DicomOperationError):
+            _handle_store_scu(self.args)
+        
+        self.assertIn("0/1 requests were processed", self.mock_stdout.getvalue()) # files_sent_successfully should be 0
+        self.assertIn("1 had DIMSE errors", self.mock_stdout.getvalue())
+
+
+# --- Tests for Helper Functions ---
+class TestDicomUtilsHelpers(unittest.TestCase):
+    def setUp(self):
+        self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
+        self.addCleanup(patch.stopall)
+
+
+    @patch("src.cli.dicom_utils.AE")
+    def test_establish_association_success(self, mock_ae_class):
+        mock_ae_inst = MagicMock(spec=AE)
+        mock_assoc = MagicMock(spec=Association)
+        mock_assoc.is_established = True
+        mock_ae_inst.associate.return_value = mock_assoc
+        mock_ae_class.return_value = mock_ae_inst
+
+        assoc = _establish_association(
+            "CALLAET", "CALLEDAET", "host", 104, [VerificationSOPClass]
+        )
+        self.assertTrue(assoc.is_established)
+        mock_ae_inst.add_requested_context.assert_called_once_with(
+            VerificationSOPClass
+        )
+        mock_ae_inst.associate.assert_called_once_with(
+            "host", 104, ae_title="CALLEDAET", evt_handlers=None
+        )
+
+    @patch("src.cli.dicom_utils.AE")
+    def test_establish_association_failure_rejected(self, mock_ae_class):
+        mock_ae_inst = MagicMock(spec=AE)
+        mock_assoc = MagicMock(spec=Association)
         mock_assoc.is_established = False
-        # Simulate acceptor details for error message
+        # Simulate pynetdicom structure for acceptor details
         mock_assoc.acceptor = MagicMock()
         mock_assoc.acceptor.primitive = MagicMock()
-        mock_assoc.acceptor.primitive.result_str = "Connection refused"
+        mock_assoc.acceptor.primitive.result_str = "Connection Refused"
+        mock_ae_inst.associate.return_value = mock_assoc
+        mock_ae_class.return_value = mock_ae_inst
 
+        with self.assertRaises(DicomConnectionError) as ctx:
+            _establish_association(
+                "CALLAET", "CALLEDAET", "host", 104, [VerificationSOPClass]
+            )
+        self.assertIn("Association rejected", str(ctx.exception))
 
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
+    @patch("src.cli.dicom_utils.AE")
+    def test_establish_association_network_error(self, mock_ae_class):
+        mock_ae_inst = MagicMock(spec=AE)
+        mock_ae_inst.associate.side_effect = OSError(
+            "Network unreachable"
+        )  # Simulate socket error etc.
+        mock_ae_class.return_value = mock_ae_inst
 
-        args = ['echo'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-        
-        output = self.captured_output.getvalue()
-        self.assertIn("Association failed for C-ECHO: Connection refused", output)
-        mock_ae_instance.associate.assert_called_once()
-        mock_assoc.send_c_echo.assert_not_called() # Should not be called if assoc fails
+        with self.assertRaises(DicomConnectionError) as ctx:
+            _establish_association(
+                "CALLAET", "CALLEDAET", "host", 104, [VerificationSOPClass]
+            )
+        self.assertIn("Association failed: Network unreachable", str(ctx.exception))
 
-    def test_echo_scp_failure_status(self, mock_ae_class):
-        """Test C-ECHO when SCP returns a failure status."""
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        # Example failure status (e.g., Refused: SOP Class Not Supported)
-        failure_status = MagicMock(Status=0x0122, StatusDescription="SOP Class Not Supported")
-        mock_assoc.send_c_echo.return_value = failure_status
+    def test_build_find_query_dataset(self):
+        args = argparse.Namespace(
+            query_level="STUDY",
+            patient_id="PAT01",
+            study_uid="1.2.3",
+            series_uid=None,
+            modality="CT",
+        )
+        ds = _build_find_query_dataset(args)
+        self.assertEqual(ds.QueryRetrieveLevel, "STUDY")
+        self.assertEqual(ds.PatientID, "PAT01")
+        self.assertEqual(ds.StudyInstanceUID, "1.2.3")
+        self.assertEqual(ds.SeriesInstanceUID, "")  # Should be empty if None in args
+        self.assertEqual(ds.Modality, "CT")
+        self.assertEqual(ds.PatientName, "*")  # Check default requested keys
 
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
+    def test_get_find_model(self):
+        self.assertEqual(
+            _get_find_model("PATIENT").UID,
+            PatientRootQueryRetrieveInformationModelFind.UID,
+        )
+        self.assertEqual(
+            _get_find_model("STUDY").UID, StudyRootQueryRetrieveInformationModelFind.UID
+        )
 
-        args = ['echo'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
+    def test_build_move_identifier_dataset(self):
+        args = argparse.Namespace(
+            query_level="SERIES",
+            patient_id="PAT02",
+            study_uid="1.2.4",
+            series_uid="1.2.4.5",
+        )
+        ds = _build_move_identifier_dataset(args)
+        self.assertEqual(ds.QueryRetrieveLevel, "SERIES")
+        self.assertEqual(ds.PatientID, "PAT02")
+        self.assertEqual(ds.StudyInstanceUID, "1.2.4")
+        self.assertEqual(ds.SeriesInstanceUID, "1.2.4.5")
 
-        output = self.captured_output.getvalue()
-        self.assertIn("C-ECHO status: 0x0122 (SOP Class Not Supported)", output)
-        mock_assoc.send_c_echo.assert_called_once()
+    def test_get_move_model(self):
+        self.assertEqual(
+            _get_move_model("PATIENT").UID,
+            PatientRootQueryRetrieveInformationModelMove.UID,
+        )
+        self.assertEqual(
+            _get_move_model("STUDY").UID, StudyRootQueryRetrieveInformationModelMove.UID
+        )
 
-    def test_echo_no_response_from_scp(self, mock_ae_class):
-        """Test C-ECHO when SCP provides no response (send_c_echo returns None)."""
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        mock_assoc.send_c_echo.return_value = None # Simulate no response
+    @patch("src.cli.dicom_utils.os.path.exists")
+    @patch("src.cli.dicom_utils.os.path.isfile")
+    @patch("src.cli.dicom_utils.dcmread")
+    def test_get_dicom_files_from_path_single_file_success(
+        self, mock_dcmread, mock_isfile, mock_exists
+    ):
+        mock_exists.return_value = True
+        mock_isfile.return_value = True
+        mock_dcmread.return_value = Dataset()  # Simulate successful read
 
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-        
-        args = ['echo'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
+        files = _get_dicom_files_from_path("/dummy/file.dcm")
+        self.assertEqual(files, ["/dummy/file.dcm"])
+        mock_dcmread.assert_called_once_with(
+            "/dummy/file.dcm", stop_before_pixels=True
+        )
 
-        output = self.captured_output.getvalue()
-        self.assertIn("C-ECHO failed: No response from SCP.", output)
+    @patch("src.cli.dicom_utils.os.path.exists")
+    def test_get_dicom_files_from_path_file_not_exists(self, mock_exists):
+        mock_exists.return_value = False
+        with self.assertRaises(InvalidInputError) as ctx:
+            _get_dicom_files_from_path("/dummy/nonexistent.dcm")
+        self.assertIn("File or directory not found", str(ctx.exception))
 
-# Separate class for C-FIND tests for clarity
-@patch('src.cli.dicom_utils.AE')
-class TestDicomUtilsFind(unittest.TestCase):
+    @patch("src.cli.dicom_utils.os.path.exists")
+    @patch("src.cli.dicom_utils.os.path.isfile")
+    @patch("src.cli.dicom_utils.dcmread")
+    def test_get_dicom_files_from_path_single_file_not_dicom(
+        self, mock_dcmread, mock_isfile, mock_exists
+    ):
+        mock_exists.return_value = True
+        mock_isfile.return_value = True
+        mock_dcmread.side_effect = Exception("Not DICOM")
 
-    def setUp(self):
-        self.held_stdout = sys.stdout
-        self.captured_output = StringIO()
-        sys.stdout = self.captured_output
+        with self.assertRaises(InvalidInputError) as ctx:
+            _get_dicom_files_from_path("/dummy/textfile.txt")
+        self.assertIn("No valid DICOM files found", str(ctx.exception))
 
-        self.common_cli_args = ['--aec', 'FIND_SCP', '--host', 'findhost', '--port', '11113']
+    @patch("src.cli.dicom_utils.os.path.exists")
+    @patch("src.cli.dicom_utils.os.path.isfile")
+    @patch("src.cli.dicom_utils.os.path.isdir")
+    @patch("src.cli.dicom_utils.os.walk")
+    @patch("src.cli.dicom_utils.dcmread")
+    def test_get_dicom_files_from_path_directory(
+        self, mock_dcmread, mock_walk, mock_isdir, mock_isfile, mock_exists
+    ):
+        mock_exists.return_value = True
+        mock_isfile.return_value = False  # Initial path is a dir
+        mock_isdir.return_value = True
 
-    def tearDown(self):
-        sys.stdout = self.held_stdout
-        patch.stopall()
-
-    def test_find_success_with_results(self, mock_ae_class):
-        """Test C-FIND successful operation with results."""
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        
-        ds1 = Dataset()
-        ds1.PatientName = "DOE^JOHN"
-        ds1.PatientID = "12345"
-        ds1.QueryRetrieveLevel = "PATIENT"
-
-        ds2 = Dataset()
-        ds2.PatientName = "ROE^JANE"
-        ds2.PatientID = "67890"
-        ds2.QueryRetrieveLevel = "PATIENT"
-
-        pending_status = MagicMock(Status=0xFF00) 
-        success_status = MagicMock(Status=0x0000) 
-        
-        mock_assoc.send_c_find.return_value = [
-            (pending_status, ds1),
-            (pending_status, ds2),
-            (success_status, None) 
+        mock_walk.return_value = [
+            ("/dummy_dir", [], ["file1.dcm", "file2.txt", "file3.dcm"])
         ]
 
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
+        def dcmread_side_effect(path, stop_before_pixels):
+            if path.endswith(".dcm"):
+                return Dataset()
+            raise Exception("Not DICOM")
 
-        args = ['find', '--patient-id', '*', '--query-level', 'PATIENT'] + self.common_cli_args 
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-        
-        output = self.captured_output.getvalue()
-        self.assertIn("Performing C-FIND to FIND_SCP at findhost:11113", output)
-        self.assertIn("Association established for C-FIND.", output)
-        self.assertIn("PatientName: DOE^JOHN", output)
-        self.assertIn("PatientID: 12345", output)
-        self.assertIn("PatientName: ROE^JANE", output)
-        self.assertIn("PatientID: 67890", output)
-        self.assertIn("C-FIND RSP from FIND_SCP: Success - Final result.", output)
-        self.assertIn("Association released.", output)
-        
-        mock_ae_instance.associate.assert_called_once()
-        mock_assoc.send_c_find.assert_called_once()
-        sent_ds = mock_assoc.send_c_find.call_args[0][0]
-        self.assertEqual(sent_ds.PatientID, '*')
-        self.assertEqual(sent_ds.QueryRetrieveLevel, 'PATIENT')
-        self.assertIn("Pending - Found identifier:", output)
-
-
-    def test_find_no_results(self, mock_ae_class):
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        success_status = MagicMock(Status=0x0000)
-        mock_assoc.send_c_find.return_value = [(success_status, None)] 
-
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-
-        args = ['find', '--patient-id', 'NONEXISTENT'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-
-        output = self.captured_output.getvalue()
-        self.assertIn("C-FIND RSP from FIND_SCP: Success - Final result.", output)
-        self.assertNotIn("Pending - Found identifier:", output)
-
-    def test_find_failure_status(self, mock_ae_class):
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        failure_status = MagicMock(Status=0xA700, StatusDescription="Unable to process")
-        error_ds = Dataset()
-        error_ds.ErrorComment = "Something went wrong"
-        mock_assoc.send_c_find.return_value = [(failure_status, error_ds)]
-
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-
-        args = ['find', '--patient-id', 'ANY'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-        
-        output = self.captured_output.getvalue()
-        self.assertIn("C-FIND RSP from FIND_SCP: Error - Status 0xA700 (Unable to process)", output)
-        self.assertIn("Error Comment: Something went wrong", output)
-
-
-@patch('src.cli.dicom_utils.AE')
-class TestDicomUtilsMove(unittest.TestCase):
-    def setUp(self):
-        self.held_stdout = sys.stdout
-        self.captured_output = StringIO()
-        sys.stdout = self.captured_output
-        self.common_cli_args = ['--aec', 'MOVE_SCP', '--host', 'movehost', '--port', '11114', '--move-dest-aet', 'DEST_AET']
-
-    def tearDown(self):
-        sys.stdout = self.held_stdout
-        patch.stopall()
-
-    def test_move_success(self, mock_ae_class):
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        
-        success_status = MagicMock(Status=0x0000, StatusDescription="Success")
-        mock_assoc.send_c_move.return_value = [(success_status, None)]
-
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-
-        args = ['move', '--patient-id', 'PATMOVE001', '--query-level', 'PATIENT'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-
-        output = self.captured_output.getvalue()
-        self.assertIn("Performing C-MOVE to MOVE_SCP at movehost:11114, destination AET: DEST_AET", output)
-        self.assertIn("Association established for C-MOVE. Destination: DEST_AET", output)
-        self.assertIn("C-MOVE final response status: 0x0000 (Success)", output)
-        self.assertIn("Association released.", output)
-
-        mock_ae_instance.associate.assert_called_once_with('movehost', 11114, ae_title='MOVE_SCP', evt_handlers=ANY)
-        mock_assoc.send_c_move.assert_called_once()
-        sent_ds = mock_assoc.send_c_move.call_args[0][0]
-        self.assertEqual(sent_ds.PatientID, 'PATMOVE001')
-        self.assertEqual(sent_ds.QueryRetrieveLevel, 'PATIENT')
-        self.assertEqual(mock_assoc.send_c_move.call_args[0][1], 'DEST_AET') # Move destination AET
-        self.assertEqual(mock_assoc.send_c_move.call_args[0][2].UID, PatientRootQueryRetrieveInformationModelMove.UID)
-
-    def test_move_failure_status_in_final_response(self, mock_ae_class):
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        
-        failure_status = MagicMock(Status=0xA801, StatusDescription="Move Destination Unknown")
-        error_identifier = Dataset()
-        error_identifier.ErrorComment = "The AET 'DEST_AET_BAD' is not recognized."
-        mock_assoc.send_c_move.return_value = [(failure_status, error_identifier)]
-
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-
-        args = ['move', '--study-uid', 'STUDYMOVE002', '--query-level', 'STUDY'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-
-        output = self.captured_output.getvalue()
-        self.assertIn("C-MOVE final response status: 0xA801 (Move Destination Unknown)", output)
-        self.assertIn("Error Comment: The AET 'DEST_AET_BAD' is not recognized.", output)
-        sent_ds = mock_assoc.send_c_move.call_args[0][0]
-        self.assertEqual(sent_ds.StudyInstanceUID, 'STUDYMOVE002')
-        self.assertEqual(sent_ds.QueryRetrieveLevel, 'STUDY')
-        self.assertEqual(mock_assoc.send_c_move.call_args[0][2].UID, StudyRootQueryRetrieveInformationModelMove.UID)
-
-
-    def test_move_image_level_not_supported_message(self, mock_ae_class):
-        args = ['move', '--query-level', 'IMAGE', '--patient-id', 'PATIMG001'] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args):
-            dicom_utils_main()
-        
-        output = self.captured_output.getvalue()
-        self.assertIn("C-MOVE at IMAGE level is not typically supported directly.", output)
-        mock_ae_class.return_value.associate.assert_not_called()
-
-
-@patch('src.cli.dicom_utils.dcmread') 
-@patch('src.cli.dicom_utils.os.path.isfile')
-@patch('src.cli.dicom_utils.os.path.isdir')
-@patch('src.cli.dicom_utils.os.walk')
-@patch('src.cli.dicom_utils.AE') 
-class TestDicomUtilsStore(unittest.TestCase):
-    def setUp(self):
-        self.held_stdout = sys.stdout
-        self.captured_output = StringIO()
-        sys.stdout = self.captured_output
-        self.common_cli_args = ['--aec', 'STORE_SCP', '--host', 'storehost', '--port', '11115']
-
-    def tearDown(self):
-        sys.stdout = self.held_stdout
-        patch.stopall()
-
-    def test_store_single_file_success(self, mock_ae_class, mock_os_walk, mock_os_isdir, mock_os_isfile, mock_dcmread):
-        mock_os_isfile.return_value = True
-        mock_os_isdir.return_value = False
-        
-        dicom_ds = Dataset()
-        dicom_ds.SOPClassUID = '1.2.840.10008.5.1.4.1.1.2' 
-        dicom_ds.SOPInstanceUID = '1.2.3.CT.1'
-        mock_dcmread.return_value = dicom_ds
-
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        mock_assoc.send_c_store.return_value = MagicMock(Status=0x0000) 
-
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
-        
-        filepath = "/path/to/dicom_file.dcm"
-        args = ['store', '--filepath', filepath] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args), \
-             patch('src.cli.dicom_utils.os.path.exists') as mock_exists:
-            mock_exists.return_value = True 
-            dicom_utils_main()
-
-        output = self.captured_output.getvalue()
-        self.assertIn(f"Performing C-STORE to STORE_SCP at storehost:11115", output)
-        self.assertIn(f"Found 1 DICOM file(s) to send.", output)
-        self.assertIn(f"Attempting to send: {filepath}", output)
-        self.assertIn("Association established for C-STORE.", output)
-        self.assertIn("Association released.", output)
-
-        mock_dcmread.assert_called_once_with(filepath)
-        mock_ae_instance.associate.assert_called_once_with('storehost', 11115, ae_title='STORE_SCP', evt_handlers=ANY)
-        mock_assoc.send_c_store.assert_called_once_with(dicom_ds)
-
-    def test_store_directory_with_one_dicom_one_non_dicom(self, mock_ae_class, mock_os_walk, mock_os_isdir, mock_os_isfile, mock_dcmread):
-        mock_os_isdir.return_value = True # For the initial path check being a directory
-        mock_os_isfile.return_value = False # Ensure it's not treated as a file initially
-
-        dir_path = "/path/to/dicom_dir/"
-        dicom_file_name = "ctimage.dcm"
-        non_dicom_file_name = "notes.txt"
-        # os.walk yields (dirpath, dirnames, filenames)
-        mock_os_walk.return_value = [
-            (dir_path, [], [dicom_file_name, non_dicom_file_name]) 
-        ]
-        
-        ct_ds = Dataset()
-        ct_ds.SOPClassUID = '1.2.840.10008.5.1.4.1.1.2' 
-        ct_ds.SOPInstanceUID = '1.2.3.CT.DIR.1'
-        
-        def dcmread_side_effect(path_to_read, stop_before_pixels=None):
-            if path_to_read == os.path.join(dir_path, dicom_file_name):
-                return ct_ds
-            elif path_to_read == os.path.join(dir_path, non_dicom_file_name):
-                # Simulate pydicom's InvalidDicomError or similar
-                raise Exception("Invalid DICOM file") 
-            return None # Should not happen with this test's logic
         mock_dcmread.side_effect = dcmread_side_effect
-        
-        mock_assoc = MagicMock()
-        mock_assoc.is_established = True
-        mock_assoc.send_c_store.return_value = MagicMock(Status=0x0000)
-        mock_ae_instance = MagicMock()
-        mock_ae_instance.associate.return_value = mock_assoc
-        mock_ae_class.return_value = mock_ae_instance
 
-        args = ['store', '--filepath', dir_path] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args), \
-             patch('src.cli.dicom_utils.os.path.exists') as mock_exists:
-            mock_exists.return_value = True
-            dicom_utils_main()
+        files = _get_dicom_files_from_path("/dummy_dir")
+        self.assertEqual(len(files), 2)
+        self.assertIn("/dummy_dir/file1.dcm", files)
+        self.assertIn("/dummy_dir/file3.dcm", files)
 
-        output = self.captured_output.getvalue()
-        self.assertIn(f"Found 1 DICOM file(s) to send.", output) 
-        self.assertIn(f"Attempting to send: {os.path.join(dir_path, dicom_file_name)}", output)
-        # Check for debug log for skipping non-DICOM
-        # To capture logger output, logger itself needs to be patched or configured for tests.
-        # For now, checking that only one send_c_store was called.
-        # self.assertIn(f"Skipping non-DICOM file: {os.path.join(dir_path, non_dicom_file_name)}", output) # This is a debug log
-        
-        # Check that dcmread was called for both files
-        expected_dcmread_calls = [
-            call(os.path.join(dir_path, dicom_file_name), stop_before_pixels=True),
-            call(os.path.join(dir_path, non_dicom_file_name), stop_before_pixels=True)
-        ]
-        mock_dcmread.assert_has_calls(expected_dcmread_calls, any_order=True)
-        mock_assoc.send_c_store.assert_called_once_with(ct_ds) # Only the valid DICOM DS
+    def test_get_storage_contexts(self):
+        contexts = _get_storage_contexts()
+        self.assertIn(RTPlanStorage, contexts)
+        self.assertIn("1.2.840.10008.5.1.4.1.1.2", contexts)
 
 
-    def test_store_file_not_found(self, mock_ae_class, mock_os_walk, mock_os_isdir, mock_os_isfile, mock_dcmread):
-        filepath = "/path/to/non_existent.dcm"
-        args = ['store', '--filepath', filepath] + self.common_cli_args
-        with patch.object(sys, 'argv', ['dicom_utils.py'] + args), \
-             patch('src.cli.dicom_utils.os.path.exists') as mock_exists:
-            mock_exists.return_value = False 
-            dicom_utils_main()
-        
-        output = self.captured_output.getvalue()
-        self.assertIn(f"File or directory not found: {filepath}", output)
-        mock_ae_class.return_value.associate.assert_not_called()
-
-class TestDicomUtilsResponseHandlers(unittest.TestCase):
+class TestDicomUtilsResponseHandlersDirect(unittest.TestCase):
     def setUp(self):
-        self.held_stdout = sys.stdout
-        self.captured_output = StringIO()
-        sys.stdout = self.captured_output
-    
-    def tearDown(self):
-        sys.stdout = self.held_stdout
+        self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
+        self.addCleanup(patch.stopall)
 
-    def test_handle_find_response_pending(self):
-        status = MagicMock(Status=0xFF00) 
+
+    def test_on_find_response_pending_with_identifier(self):
+        status = MagicMock(Status=PynetdicomStatus.Pending)
         identifier = Dataset()
         identifier.PatientName = "Test^Patient"
-        identifier.PatientID = "PID001"
-        
-        result = handle_find_response(status, identifier, "TEST_AE")
-        self.assertTrue(result) 
-        output = self.captured_output.getvalue()
-        self.assertIn("Pending - Found identifier:", output)
-        self.assertIn("PatientName: Test^Patient", output)
+        result = _on_find_response(status, identifier, "FIND_SCP")
+        self.assertTrue(result)
+        self.assertIn("PatientName: Test^Patient", self.mock_stdout.getvalue())
 
-    def test_handle_find_response_success_no_identifier(self):
-        status = MagicMock(Status=0x0000) 
-        result = handle_find_response(status, None, "TEST_AE")
-        self.assertFalse(result) 
-        output = self.captured_output.getvalue()
-        self.assertIn("Success - Final result.", output)
-        self.assertNotIn("Final identifier data", output)
+    def test_on_find_response_success_no_identifier(self):
+        status = MagicMock(Status=PynetdicomStatus.Success)
+        result = _on_find_response(status, None, "FIND_SCP")
+        self.assertFalse(result)
+        self.assertIn(
+            "C-FIND operation completed successfully", self.mock_stdout.getvalue()
+        )
 
-    def test_handle_find_response_failure_with_error_comment(self):
-        status = MagicMock(Status=0xA900, StatusDescription="Some DICOM Error") 
+    def test_on_find_response_failure(self):
+        status = MagicMock(
+            Status=PynetdicomStatus.AE_TITLE_NOT_RECOGNIZED, ErrorComment="Unknown AET"
+        )
         identifier = Dataset()
-        identifier.ErrorComment = "Detailed error from SCP"
-        result = handle_find_response(status, identifier, "TEST_AE")
-        self.assertFalse(result) 
-        output = self.captured_output.getvalue()
-        self.assertIn("Error - Status 0xA900 (Some DICOM Error)", output)
-        self.assertIn("Error Comment: Detailed error from SCP", output)
+        identifier.ErrorComment = "Peer AET error"
+        if not hasattr(identifier, "ErrorComment"): # Simulate if ErrorComment is on status
+            status.ErrorComment = "Error from status"
 
-    def test_handle_move_response_interim(self):
-        event = MagicMock()
-        event.status = MagicMock(Status=0xFF00, StatusDescription="Pending") 
+
+        result = _on_find_response(status, identifier, "FIND_SCP")
+        self.assertFalse(result)
+        output = self.mock_stdout.getvalue()
+        self.assertIn("Error - Status 0x10E", output)
+        if hasattr(identifier, 'ErrorComment') and identifier.ErrorComment:
+            self.assertIn(identifier.ErrorComment, output)
+        elif hasattr(status, 'ErrorComment') and status.ErrorComment:
+             self.assertIn(status.ErrorComment, output)
+
+
+    def test_on_move_response(self):
+        event = MagicMock(spec=evt.Event)
+        event.assoc = MagicMock(spec=Association)
+        event.status = MagicMock(Status=PynetdicomStatus.Pending, ErrorComment=None)
         event.dataset = Dataset()
-        event.dataset.NumberOfRemainingSuboperations = 5
-        event.dataset.NumberOfCompletedSuboperations = 2
-        event.dataset.NumberOfWarningSuboperations = 0
-        event.dataset.NumberOfFailedSuboperations = 0
-        event.dataset.AffectedSOPInstanceUID = "1.2.3.4.5"
+        event.dataset.NumberOfCompletedSuboperations = 1
+        _on_move_response(event)
+        self.assertIn("CompletedSuboperations: 1", self.mock_stdout.getvalue())
 
-        handle_move_response(event) 
-        output = self.captured_output.getvalue()
-        self.assertIn("C-MOVE Response: Status 0xFF00 (Pending)", output)
-        self.assertIn("Affected SOP Instance UID: 1.2.3.4.5", output)
-        self.assertIn("Remaining Sub-operations: 5", output)
-        self.assertIn("Completed Sub-operations: 2", output)
-
-    def test_handle_store_response_success(self):
-        event = MagicMock()
-        event.status = MagicMock(Status=0x0000)
+    def test_on_store_response_success(self):
+        event = MagicMock(spec=evt.Event)
+        event.status = MagicMock(Status=PynetdicomStatus.Success, ErrorComment=None)
         event.context = MagicMock()
         event.context.dataset = Dataset()
-        event.context.dataset.SOPInstanceUID = "1.2.3.STORE.SUCCESS"
-        
-        handle_store_response(event)
-        output = self.captured_output.getvalue()
-        self.assertIn("C-STORE success for SOP Instance: 1.2.3.STORE.SUCCESS", output)
+        event.context.dataset.SOPInstanceUID = "1.2.3.SUCCESS"
+        _on_store_response(event)
+        self.assertIn(
+            "C-STORE success for SOP Instance: 1.2.3.SUCCESS",
+            self.mock_stdout.getvalue(),
+        )
 
-    def test_handle_store_response_failure(self):
-        event = MagicMock()
-        event.status = MagicMock(Status=0xB000, ErrorComment="Failed to store")
-        event.context = MagicMock() 
+    def test_on_store_response_failure(self):
+        event = MagicMock(spec=evt.Event)
+        event.status = MagicMock(Status=0xA700, ErrorComment="Out of resources")
+        event.context = MagicMock()
         event.context.dataset = Dataset()
-        event.context.dataset.SOPInstanceUID = "1.2.3.STORE.FAIL"
+        event.context.dataset.SOPInstanceUID = "1.2.3.FAIL"
+        _on_store_response(event)
+        output = self.mock_stdout.getvalue()
+        self.assertIn("C-STORE failed for SOP Instance: 1.2.3.FAIL", output)
+        self.assertIn("status 0xA700", output)
+        self.assertIn("Error: Out of resources", output)
 
-        handle_store_response(event)
-        output = self.captured_output.getvalue()
-        self.assertIn("C-STORE failed for SOP Instance: 1.2.3.STORE.FAIL with status 0xB000", output)
-        self.assertIn("Error: Failed to store", output)
+
+@patch("src.cli.dicom_utils._handle_echo_scu")
+class TestDicomUtilsMainEcho(unittest.TestCase):
+    def setUp(self):
+        self.mock_stdout_main = patch("sys.stdout", new_callable=StringIO).start()
+        self.mock_stderr_main = patch("sys.stderr", new_callable=StringIO).start()
+        self.addCleanup(patch.stopall)
 
 
-if __name__ == '__main__':
+    def test_main_echo_command_calls_handler(self, mock_handle_echo_scu):
+        args = [
+            "dicom_utils.py",
+            "echo",
+            "--aec",
+            "SCP",
+            "--host",
+            "h",
+            "--port",
+            "104",
+        ]
+        with patch.object(sys, "argv", args):
+            with self.assertRaises(SystemExit) as cm: # Expect sys.exit(0) on success
+                 dicom_utils_main()
+            self.assertEqual(cm.exception.code, 0)
+
+        mock_handle_echo_scu.assert_called_once()
+        called_args = mock_handle_echo_scu.call_args[0][0]
+        self.assertEqual(called_args.aec, "SCP")
+
+    def test_main_missing_required_arg_exits(self, mock_handle_echo_scu):
+        args = ["dicom_utils.py", "echo", "--host", "h", "--port", "104"]
+        with patch.object(sys, "argv", args):
+            with self.assertRaises(SystemExit) as cm:
+                dicom_utils_main()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("required: --aec", self.mock_stderr_main.getvalue())
+
+    def test_main_handler_raises_dicom_utils_error(self, mock_handle_echo_scu):
+        mock_handle_echo_scu.side_effect = DicomOperationError("Specific OP Error")
+        args = [
+            "dicom_utils.py",
+            "echo",
+            "--aec",
+            "SCP",
+            "--host",
+            "h",
+            "--port",
+            "104",
+        ]
+        with patch.object(sys, "argv", args):
+            with self.assertRaises(SystemExit) as cm:
+                dicom_utils_main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("Error: Specific OP Error", self.mock_stderr_main.getvalue())
+
+    def test_main_handler_raises_unexpected_error(self, mock_handle_echo_scu):
+        mock_handle_echo_scu.side_effect = ValueError("Unexpected value error")
+        args = [
+            "dicom_utils.py",
+            "echo",
+            "--aec",
+            "SCP",
+            "--host",
+            "h",
+            "--port",
+            "104",
+        ]
+        with patch.object(sys, "argv", args):
+            with self.assertRaises(SystemExit) as cm:
+                dicom_utils_main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn(
+            "An unexpected critical error occurred: Unexpected value error",
+            self.mock_stderr_main.getvalue(),
+        )
+
+
+if __name__ == "__main__":
     unittest.main()
