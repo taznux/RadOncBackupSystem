@@ -146,3 +146,89 @@ class Mosaiq(DataSource):
                 assoc.release()
         else:
             logger.error(f"C-STORE Association rejected, aborted or never connected to SCP: {store_scp['AETitle']}.")
+
+    def get_treatment_summary_report(self, patient_mrn: str, db_config: dict, start_date: str = None, end_date: str = None) -> list:
+        """
+        Retrieves a simplified treatment summary report from the Mosaiq database.
+
+        :param patient_mrn: The Medical Record Number of the patient.
+        :type patient_mrn: str
+        :param db_config: A dictionary containing database connection parameters.
+        :type db_config: dict
+        :param start_date: Optional start date for the report (YYYY-MM-DD).
+        :type start_date: str, optional
+        :param end_date: Optional end date for the report (YYYY-MM-DD).
+        :type end_date: str, optional
+        :return: A list of dictionaries, where each dictionary represents a treatment record.
+                 Returns an empty list if no records are found or in case of a non-connection error.
+        :rtype: list
+        :raises pyodbc.Error: If database connection or critical query execution fails.
+        """
+        # Hypothetical SQL query - actual table and field names will vary.
+        # This query assumes tables for Patient, Course, Plan, and Site.
+        sql_query = f"""
+            SELECT
+                Pat.Last_Name + ', ' + Pat.First_Name AS PatientName,
+                Pat.Pat_ID1 AS PatientMRN,
+                TxFld.Plan_Start_DtTm AS StartDate,
+                TxFld.Plan_End_DtTm AS EndDate,
+                SUM(TxFld.Dose_Tx_Sum) AS TotalDose,
+                SUM(TxFld.Fractions_Sum) AS NumberOfFractions,
+                TxFld.VS_ID AS TargetVolume
+            FROM
+                Patient Pat
+            JOIN
+                TxField TxFld ON Pat.Pat_IDE = TxFld.Pat_IDE -- Hypothetical join, actual schema needed
+            -- Additional JOINs would be needed here for a real query, e.g., to link to Course or Plan tables
+            -- JOIN Course Crs ON Pat.Pat_IDE = Crs.Pat_IDE
+            -- JOIN Plan Pln ON Crs.Crs_IDE = Pln.Crs_IDE
+            WHERE
+                Pat.Pat_ID1 = '{patient_mrn}'
+        """
+
+        if start_date:
+            sql_query += f" AND TxFld.Plan_Start_DtTm >= '{start_date}'"
+        if end_date:
+            sql_query += f" AND TxFld.Plan_End_DtTm <= '{end_date}'"
+        
+        sql_query += """
+            GROUP BY
+                Pat.Last_Name, Pat.First_Name, Pat.Pat_ID1, TxFld.Plan_Start_DtTm, TxFld.Plan_End_DtTm, TxFld.VS_ID
+            ORDER BY
+                TxFld.Plan_Start_DtTm DESC;
+        """
+        
+        logger.info(f"Fetching treatment summary report for MRN: {patient_mrn} with date range: {start_date} - {end_date}")
+        
+        try:
+            rows = self.query(sql_query, db_config)
+            if not rows:
+                logger.info(f"No treatment records found for MRN: {patient_mrn}")
+                return []
+
+            # Assuming column names are returned by the query method or are known
+            # For pyodbc, cursor.description provides column names
+            # However, self.query returns a list of tuples directly.
+            # We need to know the column order from the SELECT statement.
+            # Hypothetical column names based on the SELECT query:
+            column_names = ["PatientName", "PatientMRN", "StartDate", "EndDate", "TotalDose", "NumberOfFractions", "TargetVolume"]
+            
+            report_data = []
+            for row in rows:
+                # Convert row (tuple) to dictionary
+                record = dict(zip(column_names, row))
+                report_data.append(record)
+            
+            logger.info(f"Successfully fetched {len(report_data)} treatment records for MRN: {patient_mrn}")
+            return report_data
+        except pyodbc.Error as e:
+            # Specific handling for "No results. Previous SQL was not a query." if the query was not a SELECT.
+            # This shouldn't happen here, but good to be aware of.
+            if "No results" in str(e) and "Previous SQL was not a query" in str(e):
+                 logger.warning(f"The SQL query for MRN {patient_mrn} did not return results (possibly not a SELECT query or empty table): {e}")
+                 return [] # Return empty list for non-critical errors like no data found
+            logger.error(f"Database error while fetching treatment summary for MRN {patient_mrn}: {e}", exc_info=True)
+            raise # Re-raise for connection errors or critical query failures
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while fetching treatment summary for MRN {patient_mrn}: {e}", exc_info=True)
+            raise
