@@ -108,6 +108,53 @@ All CLI scripts are located in `src/cli/` and should be run as Python modules fr
         ```
     *   (Default config paths are `src/config/environments.toml` and `src/config/dicom.toml`)
 
+4.  **Get Treatment Summary Report (`get_report.py`)**:
+    *   Retrieves or generates a treatment summary report, currently focused on Mosaiq data sources.
+    *   This script uses the `get_treatment_summary_report` method of the `Mosaiq` data source class.
+    *   Usage:
+        ```bash
+        python -m src.cli.get_report --environments_config <path_to_environments.toml> \
+                                     --dicom_config <path_to_dicom.toml> \
+                                     --environment <mosaiq_env_name> \
+                                     --mrn <patient_mrn> \
+                                     [--start_date <YYYY-MM-DD>] [--end_date <YYYY-MM-DD>]
+        ```
+    *   Example:
+        ```bash
+        python -m src.cli.get_report --environment TJU_MOSAIQ --mrn "PAT007" --start_date "2023-01-01"
+        ```
+    *   For full details on all options, run `python -m src.cli.get_report --help`.
+    *   More detailed documentation is available in [CLI Tools Documentation](docs/cli_tools.md).
+
+5.  **DICOM Network Utilities (`dicom_utils.py`)**:
+    *   A general-purpose command-line utility for ad-hoc DICOM network operations: C-ECHO, C-FIND, C-MOVE, and C-STORE.
+    *   This tool is useful for testing connectivity, querying remote AEs, initiating transfers, or sending DICOM files.
+    *   Common arguments for all sub-commands include `--aet` (Calling AE Title), `--aec` (Called AE Title), `--host`, and `--port`.
+    *   Usage Examples:
+        *   **C-ECHO SCU**:
+            ```bash
+            python -m src.cli.dicom_utils echo --aec <SCP_AETITLE> --host <SCP_IP> --port <SCP_PORT>
+            ```
+        *   **C-FIND SCU**:
+            ```bash
+            python -m src.cli.dicom_utils find --aec <SCP_AETITLE> --host <SCP_IP> --port <SCP_PORT> \
+                                               --patient-id "PAT123" --query-level STUDY --modality CT
+            ```
+        *   **C-MOVE SCU**:
+            ```bash
+            python -m src.cli.dicom_utils move --aec <SCP_AETITLE> --host <SCP_IP> --port <SCP_PORT> \
+                                               --move-dest-aet <MOVE_DEST_AET> \
+                                               --patient-id "PAT123" --query-level SERIES --series-uid "1.2.840..."
+            ```
+        *   **C-STORE SCU**:
+            ```bash
+            python -m src.cli.dicom_utils store --aec <SCP_AETITLE> --host <SCP_IP> --port <SCP_PORT> \
+                                                --filepath /path/to/dicom_file.dcm
+            ```
+            (Can also specify a directory for `--filepath` to send all DICOM files within it.)
+    *   For detailed options for each command, run `python -m src.cli.dicom_utils <command> --help` (e.g., `python -m src.cli.dicom_utils find --help`).
+    *   More detailed documentation is available in [CLI Tools Documentation](docs/cli_tools.md).
+
 
 ## Testing
 
@@ -149,6 +196,7 @@ Detailed documentation for different components of the system can be found in th
 -   `docs/data_sources.md`: Details about data source interfaces (ARIA, MIM, Mosaiq).
 -   `docs/flask_application.md`: Information specific to the Flask web application.
 -   `docs/test_files.md`: Overview of the test files and testing strategy.
+-   `docs/cli_tools.md`: Detailed documentation for the command-line interface tools.
 
 ## Project Components
 
@@ -179,4 +227,14 @@ Located in `src/app.py`. Provides a web interface for system interaction.
 
 ---
 
-*Note: Sections related to old scripts (`scu_move_git_v1.py`, `get_treatment_report_git_v1.py`) and Windows Task Scheduler setup for these old scripts have been removed as they pertain to outdated components in the `old/` directory.*
+## About the `old/` Directory (Legacy Scripts)
+
+The `old/` directory contains scripts from a previous version or earlier development phase of this project. These scripts are retained for historical reference but are no longer actively maintained and are considered superseded by the newer CLI tools available in `src/cli/`.
+
+*   `old/scu_move_git_v1.py` and `old/scu_move_support_git_v1.py`: These scripts likely provided functionality for performing ad-hoc DICOM C-MOVE operations, possibly with specific configurations or for particular use cases at the time. General DICOM C-MOVE capabilities are now available via `src/cli/dicom_utils.py move ...`.
+*   `old/get_treatment_report_git_v1.py`: This script was probably used for generating specific treatment reports from data sources like Mosaiq. Treatment report generation, particularly for Mosaiq, is now handled by `src/cli/get_report.py`.
+*   `old/scu_find_git_v1.py`: This script likely provided functionality for performing ad-hoc DICOM C-FIND operations. General DICOM C-FIND capabilities are now available via `src/cli/dicom_utils.py find ...`.
+*   `old/config_git_v1.toml` and `old/logging_git_v1.toml`: These were configuration files for the legacy scripts. The current system uses configurations in `src/config/`.
+
+Users should prefer the modern CLI tools in `src/cli/` for current operations. If functionality from the `old/` scripts is needed, it's recommended to adapt or verify compatibility with the new tools or develop equivalent functionality using the current framework.
+The note about the removal of old script documentation has been updated to this more comprehensive section.
