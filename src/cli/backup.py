@@ -7,19 +7,23 @@ It uses environment configurations defined in TOML files to determine source
 details, backup parameters, and data source types (ARIA, MIM, Mosaiq).
 """
 import argparse
-import functools # For functools.partial
-import io
+# import functools # For functools.partial - No longer needed
+# import io - No longer needed for handle_store
 import tomllib
-from typing import Optional, Dict, Any, Tuple, List # Added Tuple, List
+from typing import Optional, Dict, Any, Tuple, List 
+from argparse import Namespace # Added
 
-from pydicom import dcmwrite
+# from pydicom import dcmwrite - No longer needed for handle_store
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import generate_uid, ExplicitVRLittleEndian
 
 from src.data_sources.aria import ARIA
 from src.data_sources.mim import MIM
 from src.data_sources.mosaiq import Mosaiq
-from src.backup_systems.orthanc import Orthanc # For type hinting
+from src.backup_systems.orthanc import Orthanc
+from ..cli import dicom_utils # Added
+from ..cli.dicom_utils import DicomOperationError, DicomConnectionError, InvalidInputError # Added
+
 import logging
 import os
 import sys
@@ -42,71 +46,12 @@ class BackupConfigError(BackupError):
 
 
 # --- Core Functions ---
-def handle_store(orthanc_uploader: Optional[Orthanc], event: Any): # Added orthanc_uploader arg
-    """
-    Handles a DICOM C-STORE service request event.
-    If orthanc_uploader is provided, attempts to store the received dataset to Orthanc.
-
-    Args:
-        orthanc_uploader: An initialized Orthanc instance, or None.
-        event: The pynetdicom event object containing the dataset and other context.
-    
-    Returns:
-        DICOM status code (0x0000 for Success).
-    """
-    ds = event.dataset
-
-    if not hasattr(ds, "file_meta"):
-        ds.file_meta = FileMetaDataset()
-
-    if not getattr(ds.file_meta, "TransferSyntaxUID", None):
-        ds.file_meta.TransferSyntaxUID = (
-            event.context.transfer_syntax[0]
-            if event.context.transfer_syntax
-            else ExplicitVRLittleEndian
-        )
-    if not getattr(ds.file_meta, "MediaStorageSOPClassUID", None):
-        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
-    if not getattr(ds.file_meta, "MediaStorageSOPInstanceUID", None):
-        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-
-    transfer_syntax = ds.file_meta.TransferSyntaxUID
-    ds.is_little_endian = transfer_syntax.is_little_endian
-    ds.is_implicit_VR = transfer_syntax.is_implicit_VR
-
-    logger.info(f"Received SOPInstanceUID: {ds.SOPInstanceUID} via C-STORE.")
-
-    if orthanc_uploader:
-        try:
-            logger.debug(
-                f"Attempting to store SOPInstanceUID {ds.SOPInstanceUID} to Orthanc."
-            )
-            with io.BytesIO() as bio:
-                dcmwrite(bio, ds, write_like_original=False)
-                dataset_bytes = bio.getvalue()
-
-            orthanc_uploader.store(dataset_bytes)
-            logger.info(
-                f"Successfully stored SOPInstanceUID {ds.SOPInstanceUID} to Orthanc."
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to store SOPInstanceUID {ds.SOPInstanceUID} to Orthanc: {e}",
-                exc_info=True,
-            )
-    else:
-        logger.warning(
-            f"Orthanc uploader not configured/provided. SOPInstanceUID {ds.SOPInstanceUID} "
-            "received but not backed up to Orthanc."
-        )
-
-    return 0x0000  # Success for the C-STORE SCP operation
-
+# Removed handle_store function
 
 def _load_configurations(
     environment_name: str, environments_path: str, dicom_path: str
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """Loads and validates environment and DICOM configurations."""
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Loads and validates environment, DICOM, local AE, and staging SCP configurations."""
     try:
         with open(environments_path, "rb") as f:
             environments_cfg = tomllib.load(f)
@@ -139,12 +84,28 @@ def _load_configurations(
         logger.error(msg)
         raise BackupConfigError(msg)
 
-    return env_config, dicom_cfg, source_ae_details
+    local_ae_config_name = "backup_script_ae" # Mandatory name for this script's AE config
+    local_ae_config = dicom_cfg.get(local_ae_config_name)
+    if not local_ae_config or not local_ae_config.get("AETitle"):
+        msg = (f"Local AE configuration '{local_ae_config_name}' with an 'AETitle' "
+               f"not found or incomplete in {dicom_path}.")
+        logger.error(msg)
+        raise BackupConfigError(msg)
+    
+    # Staging SCP config is optional at load time, checked by Mosaiq handler
+    staging_scp_config_name = "staging_scp_for_mosaiq"
+    staging_scp_config = dicom_cfg.get(staging_scp_config_name)
+    if staging_scp_config:
+        logger.info(f"Loaded staging SCP configuration: {staging_scp_config_name}")
+    else:
+        logger.info(f"Staging SCP configuration '{staging_scp_config_name}' not found. This is only required for Mosaiq backups.")
+
+    return env_config, dicom_cfg, source_ae_details, local_ae_config, staging_scp_config
 
 
 def _initialize_source_system(
     source_name: str, env_config: Dict[str, Any], source_ae_details: Dict[str, Any]
-) -> ARIA | MIM | Mosaiq: # Using union type for return
+) -> ARIA | MIM | Mosaiq:
     """Initializes and returns the data source system instance."""
     logger.info(f"Initializing data source system: {source_name}")
     if source_name == "ARIA":
@@ -162,32 +123,40 @@ def _initialize_source_system(
 
 
 def _initialize_orthanc_uploader(
-    env_config: Dict[str, Any], dicom_cfg: Dict[str, Any]
+    env_config: Dict[str, Any], dicom_cfg: Dict[str, Any], local_aet_title: str
 ) -> Optional[Orthanc]:
     """Initializes and returns an Orthanc uploader instance if configured."""
     backup_target_config_name = env_config.get("backup")
     if not backup_target_config_name:
         logger.warning(
-            f"No 'backup' destination defined for environment. Orthanc uploader cannot be initialized."
+            f"No 'backup' destination defined for environment. Orthanc uploader (DICOM mode) cannot be initialized."
         )
         return None
 
-    orthanc_config = dicom_cfg.get(backup_target_config_name)
-    if not orthanc_config or "URL" not in orthanc_config:
+    orthanc_ae_config = dicom_cfg.get(backup_target_config_name)
+    if not orthanc_ae_config or not all(k in orthanc_ae_config for k in ["AETitle", "IP", "Port"]):
         logger.warning(
-            f"Orthanc URL for backup target '{backup_target_config_name}' not found or incomplete in DICOM config. "
-            "Orthanc uploader cannot be initialized."
+            f"DICOM AE configuration for backup target '{backup_target_config_name}' "
+            f"(requiring AETitle, IP, Port) not found or incomplete in DICOM config. "
+            "Orthanc uploader (DICOM mode) cannot be initialized."
         )
         return None
     
     try:
-        uploader = Orthanc(orthanc_url=orthanc_config["URL"])
+        uploader = Orthanc(
+            calling_aet=local_aet_title,
+            peer_aet=orthanc_ae_config['AETitle'],
+            peer_host=orthanc_ae_config['IP'],
+            peer_port=int(orthanc_ae_config['Port'])
+        )
         logger.info(
-            f"Orthanc uploader initialized for target '{backup_target_config_name}' at {orthanc_config['URL']}"
+            f"Orthanc uploader (DICOM mode) initialized for target '{backup_target_config_name}' "
+            f"(AET: {orthanc_ae_config['AETitle']}, Host: {orthanc_ae_config['IP']}:{orthanc_ae_config['Port']}) "
+            f"using calling AET: {local_aet_title}"
         )
         return uploader
     except Exception as e:
-        logger.error(f"Failed to initialize Orthanc uploader: {e}", exc_info=True)
+        logger.error(f"Failed to initialize Orthanc uploader (DICOM mode): {e}", exc_info=True)
         return None
 
 
@@ -209,15 +178,13 @@ def _build_aria_mim_cfind_dataset(env_config: Dict[str, Any], environment_name: 
             f"Using 'dicom_query_keys' from environment config for C-FIND: {dicom_query_keys_config}"
         )
         for key, value in dicom_query_keys_config.items():
-            try: # Check if key is a valid DICOM keyword before setting
-                Dataset().add_new(key, "LO", "") # Test if valid keyword, type/value unimportant
+            try: 
+                Dataset().add_new(key, "LO", "") 
                 setattr(query_dataset, key, value)
             except Exception:
                  logger.warning(f"DICOM query key '{key}' from config is not a standard attribute name. Attempting to set as is.")
                  setattr(query_dataset, key, value)
 
-
-    # Ensure essential keys for Q/R are present
     for essential_key in [
         "PatientID", "StudyDate", "Modality", "SeriesInstanceUID", "StudyInstanceUID", "PatientName"
     ]:
@@ -231,19 +198,25 @@ def _build_aria_mim_cfind_dataset(env_config: Dict[str, Any], environment_name: 
 
 def _handle_aria_mim_backup(
     source_instance: ARIA | MIM,
-    environment_name: str, # For logging context
+    environment_name: str, 
     env_config: Dict[str, Any],
     source_ae_details: Dict[str, Any],
     dicom_cfg: Dict[str, Any],
-    local_scp_config: Dict[str, Any],
+    local_aet_title: str, # Added
     orthanc_uploader: Optional[Orthanc]
 ):
-    """Handles the backup workflow for ARIA or MIM sources."""
+    """Handles the backup workflow for ARIA or MIM sources using direct C-MOVE."""
     query_dataset = _build_aria_mim_cfind_dataset(env_config, environment_name)
-    source_name = env_config.get("source") # For logging
+    source_name = env_config.get("source") 
+    backup_target_name = env_config.get("backup")
+
+    if not backup_target_name or backup_target_name not in dicom_cfg:
+        logger.error(f"Backup target AE '{backup_target_name}' not configured in DICOM config for ARIA/MIM workflow. Skipping transfers.")
+        return
+    backup_target_ae_config = dicom_cfg[backup_target_name]
 
     logger.info(f"Querying {source_name} for data with C-FIND dataset: \n{query_dataset}")
-    instance_uids_found = source_instance.query(query_dataset, source_ae_details) # type: ignore
+    instance_uids_found = source_instance.query(query_dataset, source_ae_details)
 
     logger.info(f"Found {len(instance_uids_found)} instance UID(s) from {source_name}.")
 
@@ -251,41 +224,48 @@ def _handle_aria_mim_backup(
         logger.info(f"No instances found from {source_name} matching query criteria.")
         return
 
-    if not orthanc_uploader:
-        logger.error(
-            f"Orthanc uploader not initialized for environment {environment_name}. "
-            f"Cannot backup received instances from {source_name}. Skipping transfers."
-        )
-        return
-
-    logger.info(
-        f"Local C-STORE SCP for {source_name} transfer will listen on "
-        f"{local_scp_config['Port']} with AET {local_scp_config['AETitle']}"
-    )
-    
-    # Bind the orthanc_uploader to handle_store for this specific backup operation
-    bound_handle_store = functools.partial(handle_store, orthanc_uploader)
-
     processed_uids_count = 0
     max_uids = env_config.get("max_uids_per_run", 10 if os.environ.get("CI") else float('inf'))
 
     for uid in list(instance_uids_found)[:max_uids]:
-        logger.info(f"Processing instance UID: {uid} for transfer from {source_name}")
+        logger.info(f"Processing instance UID: {uid} for C-MOVE from {source_name} to {backup_target_name}")
         dataset_to_retrieve = Dataset()
-        dataset_to_retrieve.QueryRetrieveLevel = "IMAGE"
+        dataset_to_retrieve.QueryRetrieveLevel = "IMAGE" # C-MOVE for a single instance requires IMAGE level
+        # PatientID, StudyInstanceUID, SeriesInstanceUID might be needed by some SCPs for IMAGE level C-MOVE
+        # For simplicity, we assume SOPInstanceUID is enough, but this might need adjustment
+        dataset_to_retrieve.PatientID = query_dataset.PatientID # Carry over from C-FIND if available
+        dataset_to_retrieve.StudyInstanceUID = query_dataset.StudyInstanceUID
+        dataset_to_retrieve.SeriesInstanceUID = query_dataset.SeriesInstanceUID
         dataset_to_retrieve.SOPInstanceUID = uid
 
         try:
             logger.info(
-                f"Initiating transfer for UID {uid} from {source_name} to local SCP, then to Orthanc."
+                f"Initiating C-MOVE for UID {uid} from {source_name} to destination AET: {backup_target_ae_config['AETitle']}."
             )
-            source_instance.transfer( # type: ignore
-                dataset_to_retrieve, source_ae_details, local_scp_config, bound_handle_store
+            transfer_success = source_instance.transfer( # type: ignore
+                dataset_to_retrieve, 
+                source_ae_details, 
+                backup_destination_aet=backup_target_ae_config['AETitle'],
+                calling_aet=local_aet_title
             )
+
+            if transfer_success:
+                logger.info(f"C-MOVE successful for UID {uid} to {backup_target_name}.")
+                if orthanc_uploader:
+                    logger.info(f"Verifying storage of UID {uid} in Orthanc backup via C-FIND.")
+                    store_verified = orthanc_uploader.store(sop_instance_uid=uid)
+                    if store_verified:
+                        logger.info(f"UID {uid} successfully verified in Orthanc backup.")
+                    else:
+                        logger.warning(f"UID {uid} NOT verified in Orthanc backup after C-MOVE.")
+                else:
+                    logger.warning("Orthanc uploader not available, skipping storage verification.")
+            else:
+                logger.error(f"C-MOVE failed for UID {uid} from {source_name} to {backup_target_name}.")
             processed_uids_count += 1
         except Exception as e:
             logger.error(
-                f"Error during transfer initiation for UID {uid} from {source_name}: {e}",
+                f"Error during C-MOVE transfer for UID {uid} from {source_name}: {e}",
                 exc_info=True,
             )
     
@@ -294,10 +274,10 @@ def _handle_aria_mim_backup(
 
 
 def _build_mosaiq_dataset_from_row(
-    record_data_row: Dict[str, Any] | Tuple[Any, ...], # Can be dict or tuple
+    record_data_row: Dict[str, Any] | Tuple[Any, ...], 
     db_column_to_dicom_tag: Dict[str, str],
     dicom_defaults: Dict[str, Any],
-    row_index: int # For logging
+    row_index: int 
 ) -> Dataset:
     """Converts a database row to a pydicom.Dataset."""
     ds = Dataset()
@@ -317,13 +297,12 @@ def _build_mosaiq_dataset_from_row(
                 logger.warning(
                     f"Column '{db_col}' not found in Mosaiq record (row {row_index}) for tag '{dcm_tag_name}'."
                 )
-    else: # Assuming tuple
+    else: 
         logger.warning(
             f"Mosaiq record_data_row (row {row_index}) is a tuple. "
             "Mapping requires db_column_to_dicom_tag to use integer indices "
             "or SQL query to define names for a DictCursor."
         )
-        # Basic placeholder if not a dict and no specific tuple mapping logic
         if "PatientID" not in dicom_defaults and not any(v=="PatientID" for v in db_column_to_dicom_tag.values()):
              ds.PatientID = f"MOSAIQ_REC_{row_index + 1}"
 
@@ -332,11 +311,12 @@ def _build_mosaiq_dataset_from_row(
         if not hasattr(ds, dcm_tag_name):
             setattr(ds, dcm_tag_name, default_value)
 
-    # UID Generation and File Meta
-    ds.SOPInstanceUID = getattr(ds, "SOPInstanceUID", None) or generate_uid()
-    ds.SeriesInstanceUID = getattr(ds, "SeriesInstanceUID", None) or generate_uid()
+    # Ensure essential UIDs are present for C-MOVE
+    ds.PatientID = getattr(ds, "PatientID", f"MOSAIQ_PAT_{row_index + 1}")
     ds.StudyInstanceUID = getattr(ds, "StudyInstanceUID", None) or generate_uid()
-    ds.SOPClassUID = getattr(ds, "SOPClassUID", None) or "1.2.840.10008.5.1.4.1.1.7" # Secondary Capture fallback
+    ds.SeriesInstanceUID = getattr(ds, "SeriesInstanceUID", None) or generate_uid()
+    ds.SOPInstanceUID = getattr(ds, "SOPInstanceUID", None) or generate_uid()
+    ds.SOPClassUID = getattr(ds, "SOPClassUID", None) or "1.2.840.10008.5.1.4.1.1.481.2" # RT Beams Treatment Record Default
 
     ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
     ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
@@ -351,12 +331,21 @@ def _build_mosaiq_dataset_from_row(
 
 def _handle_mosaiq_backup(
     source_instance: Mosaiq,
-    environment_name: str, # For logging context
+    environment_name: str, 
     env_config: Dict[str, Any],
     source_ae_details: Dict[str, Any],
     dicom_cfg: Dict[str, Any],
+    local_aet_title: str, # Added
+    orthanc_uploader: Optional[Orthanc], # Added
+    staging_scp_config: Optional[Dict[str, Any]] # Added
 ):
-    """Handles the backup workflow for Mosaiq sources."""
+    """Handles the backup workflow for Mosaiq sources using C-STORE to staging then C-MOVE."""
+    if not staging_scp_config:
+        raise BackupConfigError(
+            f"Staging SCP configuration ('staging_scp_for_mosaiq') is required for Mosaiq backup "
+            f"in environment '{environment_name}' but not found in DICOM config."
+        )
+
     db_config = source_ae_details.get("db_config")
     if not db_config:
         msg = f"Database configuration ('db_config') for Mosaiq source '{env_config['source']}' not found in DICOM config."
@@ -381,13 +370,12 @@ def _handle_mosaiq_backup(
     backup_target_aet_name = env_config.get("backup")
     if not backup_target_aet_name or backup_target_aet_name not in dicom_cfg:
         msg = (f"Backup target AE '{backup_target_aet_name}' not configured in DICOM config. "
-               "Mosaiq records cannot be transferred.")
+               "Mosaiq records cannot be fully backed up.")
         logger.error(msg)
-        if rt_records_data:
+        if rt_records_data: # Only critical if there's data to backup
             raise BackupConfigError(f"Missing backup target AE configuration for Mosaiq environment '{environment_name}'.")
         return
-
-    store_scp_details = dicom_cfg[backup_target_aet_name]
+    backup_target_ae_config = dicom_cfg[backup_target_aet_name]
 
     for i, record_data_row in enumerate(rt_records_data):
         try:
@@ -395,13 +383,51 @@ def _handle_mosaiq_backup(
                 record_data_row, db_column_to_dicom_tag, dicom_defaults, i
             )
             patient_id_for_log = getattr(ds, 'PatientID', 'UnknownPatientID')
+            sop_uid_for_log = ds.SOPInstanceUID
             logger.info(
-                f"Attempting to transfer Mosaiq record (PatientID: {patient_id_for_log}, "
-                f"SOPInstanceUID: {ds.SOPInstanceUID}) to {backup_target_aet_name}"
+                f"Attempting C-STORE of Mosaiq record (PatientID: {patient_id_for_log}, "
+                f"SOPInstanceUID: {sop_uid_for_log}) to staging SCP: {staging_scp_config['AETitle']}"
             )
-            source_instance.transfer(ds, store_scp_details)
+            store_to_staging_success = source_instance.transfer(ds, staging_scp_config)
+
+            if store_to_staging_success:
+                logger.info(f"Successfully C-STORED UID {sop_uid_for_log} to staging SCP {staging_scp_config['AETitle']}.")
+                
+                move_args = Namespace(
+                    aet=local_aet_title,
+                    aec=staging_scp_config['AETitle'],
+                    host=staging_scp_config['IP'],
+                    port=int(staging_scp_config['Port']),
+                    move_dest_aet=backup_target_ae_config['AETitle'],
+                    query_level="IMAGE", 
+                    patient_id=ds.PatientID, 
+                    study_uid=ds.StudyInstanceUID, 
+                    series_uid=ds.SeriesInstanceUID, 
+                    sop_instance_uid=ds.SOPInstanceUID,
+                    verbose=False # Consider making this configurable
+                )
+                logger.info(f"Attempting C-MOVE for UID {sop_uid_for_log} from staging {staging_scp_config['AETitle']} to {backup_target_ae_config['AETitle']}")
+                try:
+                    dicom_utils._handle_move_scu(move_args) # Assumes this raises on failure
+                    logger.info(f"C-MOVE successful for UID {sop_uid_for_log} from staging to {backup_target_ae_config['AETitle']}.")
+                    if orthanc_uploader:
+                        logger.info(f"Verifying storage of UID {sop_uid_for_log} in Orthanc backup via C-FIND.")
+                        store_verified = orthanc_uploader.store(sop_instance_uid=sop_uid_for_log)
+                        if store_verified:
+                            logger.info(f"UID {sop_uid_for_log} successfully verified in Orthanc backup.")
+                        else:
+                            logger.warning(f"UID {sop_uid_for_log} NOT verified in Orthanc backup after C-MOVE from staging.")
+                    else:
+                        logger.warning("Orthanc uploader not available, skipping storage verification after C-MOVE from staging.")
+                except (DicomOperationError, DicomConnectionError, InvalidInputError) as e:
+                    logger.error(f"C-MOVE from staging failed for UID {sop_uid_for_log}: {e}", exc_info=True)
+                except Exception as e: # Catch any other unexpected errors from dicom_utils
+                    logger.error(f"Unexpected error during C-MOVE from staging for UID {sop_uid_for_log}: {e}", exc_info=True)
+
+            else:
+                logger.error(f"C-STORE to staging SCP {staging_scp_config['AETitle']} failed for UID {sop_uid_for_log}.")
         except Exception as e:
-            logger.error(f"Failed to process or transfer dataset from Mosaiq row {i}: {e}", exc_info=True)
+            logger.error(f"Failed to process or C-STORE dataset from Mosaiq row {i} to staging: {e}", exc_info=True)
 
 
 def backup_data(environment_name: str):
@@ -411,50 +437,46 @@ def backup_data(environment_name: str):
     """
     logger.info(f"Starting backup for environment: {environment_name}")
     
-    # This assignment is for the functools.partial approach with handle_store.
-    # It will be properly initialized if the source is ARIA/MIM.
-    # For Mosaiq, it remains None, and handle_store is not used.
-    current_orthanc_uploader: Optional[Orthanc] = None
+    current_orthanc_uploader: Optional[Orthanc] = None # Initialize to None
 
     try:
-        env_config, dicom_cfg, source_ae_details = _load_configurations(
+        env_config, dicom_cfg, source_ae_details, local_ae_config, staging_scp_config = _load_configurations(
             environment_name, ENVIRONMENTS_CONFIG_PATH, DICOM_CONFIG_PATH
         )
-        source_name = env_config["source"] # Safe to access after _load_configurations
+        source_name = env_config["source"] 
         source_instance = _initialize_source_system(
             source_name, env_config, source_ae_details
         )
+        
+        # Initialize Orthanc uploader once, using the local_ae_config's AETitle
+        current_orthanc_uploader = _initialize_orthanc_uploader(env_config, dicom_cfg, local_ae_config['AETitle'])
 
         if source_name in ["ARIA", "MIM"]:
-            current_orthanc_uploader = _initialize_orthanc_uploader(env_config, dicom_cfg)
-            # Proceed with ARIA/MIM backup even if Orthanc uploader init failed (it will log warnings)
-            
-            local_scp_services_config = dicom_cfg.get("local_dicom_services", {}).get("backup_scp", {})
-            local_scp_aetitle = local_scp_services_config.get("AETitle")
-            local_scp_port = local_scp_services_config.get("Port")
-
-            if not local_scp_aetitle or not local_scp_port:
-                msg = (f"'local_dicom_services.backup_scp' with 'AETitle' and 'Port' "
-                       f"not fully configured in {DICOM_CONFIG_PATH}. Cannot start local SCP for ARIA/MIM.")
-                raise BackupConfigError(msg)
-
-            local_scp_config = {
-                "IP": local_scp_services_config.get("IP", "0.0.0.0"),
-                "Port": local_scp_port,
-                "AETitle": local_scp_aetitle,
-            }
             _handle_aria_mim_backup(
-                source_instance, environment_name, env_config, source_ae_details, dicom_cfg, local_scp_config, current_orthanc_uploader
+                source_instance, # type: ignore 
+                environment_name, 
+                env_config, 
+                source_ae_details, 
+                dicom_cfg, 
+                local_ae_config['AETitle'], # Pass local AET
+                current_orthanc_uploader
             )
         elif source_name == "Mosaiq":
             _handle_mosaiq_backup(
-                source_instance, environment_name, env_config, source_ae_details, dicom_cfg # type: ignore
+                source_instance, # type: ignore
+                environment_name, 
+                env_config, 
+                source_ae_details, 
+                dicom_cfg,
+                local_ae_config['AETitle'], # Pass local AET
+                current_orthanc_uploader,    # Pass uploader
+                staging_scp_config         # Pass staging config
             )
         # Else case for invalid source_name is handled in _initialize_source_system
 
-    except (BackupConfigError, ValueError) as e: # ValueError can be raised by source system init
+    except (BackupConfigError, ValueError) as e: 
         logger.error(f"Backup configuration or setup error for environment '{environment_name}': {e}", exc_info=True)
-        raise # Re-raise for main to handle exit code
+        raise 
     except Exception as e:
         logger.error(f"An unexpected error occurred during backup for environment '{environment_name}': {e}", exc_info=True)
         raise BackupError(f"Unexpected backup failure for {environment_name}: {e}") from e

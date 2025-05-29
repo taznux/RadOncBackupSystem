@@ -57,14 +57,8 @@ class TestMIM(unittest.TestCase):
             'IP': mock_qr_host,
             'Port': mock_qr_port
         }
-
-        # This is the configuration for the internal C-STORE SCP that MIM.transfer will start.
-        # The C-MOVE SCP (mock_qr_scp_server) will be told to send files to this AET.
-        self.store_scp = {
-            'AETitle': 'MIM_STORE_SCP', # Shortened AE Title for MIM's internal C-STORE SCP
-            'IP': '127.0.0.1', # IP where MIM's internal C-STORE SCP will listen
-            'Port': 11115 # Port for MIM's internal C-STORE SCP, must be distinct
-        }
+        # self.store_scp is no longer needed
+        # self.received_by_internal_scp is no longer needed
 
     def tearDown(self):
         if hasattr(self, 'mock_qr_scp_server') and self.mock_qr_scp_server:
@@ -72,38 +66,37 @@ class TestMIM(unittest.TestCase):
             self.mock_qr_scp_server.reset()
 
     def test_query(self):
-        # Test the query method using the mock server
         uids = self.mim.query(self.query_dataset, self.qr_scp)
         self.assertIsInstance(uids, set)
         self.assertEqual(len(uids), 1)
         self.assertIn(self.sample_response_dataset.SOPInstanceUID, uids)
 
     def test_transfer(self):
-        # Test the transfer method using the mock C-MOVE SCP
-        
-        # This handle_store is for the internal C-STORE SCP started by MIM.transfer
-        def handle_store(event):
-            # This SCP receives files if the C-MOVE SCP (mock_qr_scp_server)
-            # were to actually send them. Our mock setup does not send.
-            if event.dataset:
-                self.received_by_internal_scp.append(event.dataset.SOPInstanceUID)
-            return 0x0000 # Success status for the C-STORE operation
+        mock_backup_destination_aet = "MIM_BACKUP_AET"
+        mock_calling_aet = "TEST_MIM_CALLING_AET"
 
-        # self.qr_scp is the C-MOVE SCP (our mock server).
-        # self.store_scp['AETitle'] is the AE Title that MIM.transfer's internal C-STORE SCP will use.
-        # MIM.transfer will tell self.qr_scp (the C-MOVE SCP) to send files to self.store_scp['AETitle'].
-        # Our mock_qr_scp_server's handle_move will log this destination AET.
+        # self.get_dataset (from setUp) is used as the move_dataset argument.
+        # It's configured for IMAGE level C-MOVE with a SOPInstanceUID.
         
-        # self.get_dataset contains the C-MOVE request identifier (e.g., SOPInstanceUID for IMAGE level)
+        result = False # Initialize to ensure it's set
         try:
-            self.mim.transfer(self.get_dataset, self.qr_scp, self.store_scp, handle_store)
+            result = self.mim.transfer(
+                self.get_dataset, # This is the move_dataset for the C-MOVE operation
+                self.qr_scp, 
+                mock_backup_destination_aet,
+                mock_calling_aet
+            )
         except Exception as e:
             self.fail(f"MIM.transfer raised an exception: {e}")
 
-        # Assert that no data was actually received by the internal SCP,
-        # because our mock C-MOVE SCP (mock_qr_scp_server) doesn't send C-STORE sub-operations.
-        self.assertEqual(len(self.received_by_internal_scp), 0, 
-                         "Internal SCP should not have received any datasets.")
+        self.assertTrue(result, "MIM.transfer should return True on C-MOVE success.")
+        
+        # Verify that the MockDicomServer (acting as C-MOVE SCP) received the correct move_destination_aet
+        self.assertIsNotNone(self.mock_qr_scp_server.last_move_destination_aet, 
+                             "MockDicomServer should have recorded the move_destination_aet.")
+        self.assertEqual(self.mock_qr_scp_server.last_move_destination_aet, 
+                         mock_backup_destination_aet,
+                         "MIM.transfer did not send the correct move_destination_aet to the C-MOVE SCP.")
 
 if __name__ == '__main__':
     unittest.main()

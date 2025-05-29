@@ -28,7 +28,14 @@ AETitle = ""
 IP = ""
 Port = 11112
 
+# Main Orthanc server for backup (C-MOVE destination, C-FIND/C-GET target)
 [orthanc]
-AETitle = ""
-IP = ""
-Port = 11112
+AETitle = "ORTHANC_BACKUP"
+IP = "127.0.0.1" # User should change this to the actual IP
+Port = 104       # User should change this to the actual port, 104 is common for DICOM
+
+# Staging SCP for Mosaiq-generated instances before C-MOVE to main backup
+[staging_scp_for_mosaiq]
+AETitle = "MOSAIQ_STAGING_SCP"
+IP = "127.0.0.1" # User should change this, could be a local SCP
+Port = 11113     # User should change this to a free port

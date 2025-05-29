@@ -44,6 +44,7 @@ class MockDicomServer:
         self.c_find_responses: dict[frozenset, list[Dataset]] = {}
         self.received_datasets: list[Dataset] = []
         self.c_store_handler_override = None
+        self.last_move_destination_aet: Optional[str] = None # Added to store move destination
         self._server_thread = None
         self._server_instance = None
 
@@ -143,6 +144,7 @@ class MockDicomServer:
         # For this mock, we'll keep it simple.
         # No specific number of sub-operations are being reported back.
         # Yield a few "Pending" statuses
+        self.last_move_destination_aet = event.move_destination_aet # Store the move destination
         yield (0xFF00, None) # Pending
         yield (0xFF00, None) # Pending
 
@@ -233,6 +235,7 @@ class MockDicomServer:
         """
         self.c_find_responses.clear()
         self.received_datasets.clear()
+        self.last_move_destination_aet = None # Reset on server reset
 
     def add_c_find_response(self, query_criteria_dataset: Dataset, response_datasets: list[Dataset]):
         """
