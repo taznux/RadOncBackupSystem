@@ -1,7 +1,7 @@
 import threading
 import time # Will be used for example usage
 import logging # Added
-from pydicom.dataset import Dataset
+from pydicom.dataset import Dataset, FileMetaDataset # Added FileMetaDataset
 from pynetdicom import AE, evt
 from pynetdicom.sop_class import (
     StudyRootQueryRetrieveInformationModelFind,
@@ -11,7 +11,7 @@ from pynetdicom.sop_class import (
     # PatientRootQueryRetrieveInformationModelGet, # Consider if needed
 )
 from pynetdicom.presentation import PresentationContext, StoragePresentationContexts
-from pydicom.uid import PYDICOM_IMPLEMENTATION_UID, ImplicitVRLittleEndian, ExplicitVRLittleEndian # Added ExplicitVRLittleEndian
+from pydicom.uid import PYDICOM_IMPLEMENTATION_UID, ImplicitVRLittleEndian, ExplicitVRLittleEndian, generate_uid # Added generate_uid
 
 
 # Configure basic logging for the mock server
@@ -172,29 +172,32 @@ class MockDicomServer:
         # event.dataset contains the DICOM dataset received
         # It's already a pydicom.Dataset object
         ds = event.dataset
-        # Ensure it has necessary attributes for storage, like file_meta
-        if not hasattr(ds, 'file_meta'):
-            ds.file_meta = Dataset()
-            # Populate with common UIDs if missing, or derive from context
-            ds.file_meta.MediaStorageSOPClassUID = event.context.abstract_syntax # Corrected
-            ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'UnknownUID_FileMetaCreation' # Ensure this is present in ds
-            
-            # Use the mock server's own implementation class UID
-            if hasattr(self.ae, 'implementation_class_uid'):
-                 ds.file_meta.ImplementationClassUID = self.ae.implementation_class_uid
-            else: # Fallback if not set on AE (should be)
-                # from pydicom.uid import PYDICOM_IMPLEMENTATION_UID # pydicom's default - import moved to top
-                ds.file_meta.ImplementationClassUID = PYDICOM_IMPLEMENTATION_UID
+        
+        # Ensure file_meta is present and is a FileMetaDataset
+        if not hasattr(ds, 'file_meta') or not isinstance(ds.file_meta, FileMetaDataset):
+            ds.file_meta = FileMetaDataset()
+            logger.debug(f"MockDicomServer: Created missing or incorrect file_meta for SOPInstanceUID: {ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'Unknown'}")
 
-            if event.context.transfer_syntax: # Should be present from accepted context
-                ds.file_meta.TransferSyntaxUID = event.context.transfer_syntax[0]
-            else:
-                # Fallback, though ideally context should always have a negotiated transfer syntax
-                # from pydicom.uid import ImplicitVRLittleEndian # A common default - import moved to top
-                ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+        # Populate essential file_meta attributes if missing
+        ds.file_meta.MediaStorageSOPClassUID = getattr(ds.file_meta, 'MediaStorageSOPClassUID', None) or event.context.abstract_syntax
+        # Ensure SOPInstanceUID is valid if possible, or generate if it's truly new/unknown
+        sop_instance_uid = getattr(ds, 'SOPInstanceUID', None)
+        if not sop_instance_uid or sop_instance_uid == 'UnknownUID_FileMetaCreation':
+            logger.warning("SOPInstanceUID missing or invalid in received dataset, generating a new one for file_meta.")
+            sop_instance_uid = generate_uid() # Generate valid UID
+            ds.SOPInstanceUID = sop_instance_uid # Assign back to dataset if it was missing
             
-            # Add a log to indicate file_meta was created
-            logger.debug(f"MockDicomServer: Created missing file_meta for SOPInstanceUID: {ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'Unknown'}")
+        ds.file_meta.MediaStorageSOPInstanceUID = getattr(ds.file_meta, 'MediaStorageSOPInstanceUID', None) or sop_instance_uid
+        
+        # Use the mock server's own implementation class UID or pydicom's default
+        default_impl_uid = getattr(self.ae, 'implementation_class_uid', PYDICOM_IMPLEMENTATION_UID)
+        ds.file_meta.ImplementationClassUID = getattr(ds.file_meta, 'ImplementationClassUID', None) or default_impl_uid
+
+        # Set TransferSyntaxUID from context or default
+        default_ts = ImplicitVRLittleEndian
+        if event.context.transfer_syntax:
+            default_ts = event.context.transfer_syntax[0]
+        ds.file_meta.TransferSyntaxUID = getattr(ds.file_meta, 'TransferSyntaxUID', None) or default_ts
 
         # Add a more general log for any stored dataset
         logger.info(f"MockDicomServer: Dataset received for SOPInstanceUID: {ds.SOPInstanceUID if hasattr(ds, 'SOPInstanceUID') else 'Unknown'}. Adding to received_datasets list.")
@@ -359,15 +362,16 @@ class MockDicomServer:
         if not hasattr(dataset, "SOPInstanceUID") or not dataset.SOPInstanceUID:
             logger.error("Dataset added for C-GET must have a SOPInstanceUID.")
             return
-        # Ensure file_meta is present, as it's needed for C-STORE sub-operations
-        if not hasattr(dataset, 'file_meta'):
-            dataset.file_meta = Dataset()
-        if not dataset.file_meta.get('TransferSyntaxUID'): # Set a default if not present
-            dataset.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian 
-        if not dataset.file_meta.get('MediaStorageSOPClassUID'):
-            dataset.file_meta.MediaStorageSOPClassUID = dataset.SOPClassUID # Assume it's on the dataset
-        if not dataset.file_meta.get('MediaStorageSOPInstanceUID'):
-            dataset.file_meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
+        # Ensure file_meta is present and is a FileMetaDataset, as it's needed for C-STORE sub-operations
+        if not hasattr(dataset, 'file_meta') or not isinstance(dataset.file_meta, FileMetaDataset):
+            dataset.file_meta = FileMetaDataset()
+            logger.debug(f"MockDicomServer: Created/corrected file_meta for dataset {dataset.SOPInstanceUID} in add_dataset_for_get.")
+
+        # Ensure essential file_meta attributes are present
+        dataset.file_meta.TransferSyntaxUID = getattr(dataset.file_meta, 'TransferSyntaxUID', ExplicitVRLittleEndian)
+        dataset.file_meta.MediaStorageSOPClassUID = getattr(dataset.file_meta, 'MediaStorageSOPClassUID', None) or dataset.SOPClassUID
+        dataset.file_meta.MediaStorageSOPInstanceUID = getattr(dataset.file_meta, 'MediaStorageSOPInstanceUID', None) or dataset.SOPInstanceUID
+        dataset.file_meta.ImplementationClassUID = getattr(dataset.file_meta, 'ImplementationClassUID', PYDICOM_IMPLEMENTATION_UID)
             
         self.datasets_for_get.append(dataset)
         logger.info(f"Added dataset {dataset.SOPInstanceUID} to datasets_for_get list.")
@@ -399,20 +403,23 @@ if __name__ == '__main__':
     response_ds1.PatientID = "12345"
     response_ds1.PatientName = "Test^Patient"
     response_ds1.Modality = "CT"
-    response_ds1.SOPInstanceUID = "1.2.3.4.5.6.7.8.9.1" 
-    response_ds1.StudyInstanceUID = "1.2.3.4.5"
-    response_ds1.SeriesInstanceUID = "1.2.3.4.5.6"
+    # Generate valid UIDs
+    response_ds1.SOPInstanceUID = generate_uid() 
+    response_ds1.StudyInstanceUID = generate_uid()
+    response_ds1.SeriesInstanceUID = generate_uid()
     response_ds1.SOPClassUID = '1.2.840.10008.5.1.4.1.1.2' # CT Image Storage
-    response_ds1.file_meta = Dataset()
+    
+    response_ds1.file_meta = FileMetaDataset() # Use FileMetaDataset
     response_ds1.file_meta.MediaStorageSOPClassUID = response_ds1.SOPClassUID
     response_ds1.file_meta.MediaStorageSOPInstanceUID = response_ds1.SOPInstanceUID
-    response_ds1.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian # Example
-    response_ds1.is_little_endian = True
-    response_ds1.is_implicit_VR = False # For ExplicitVRLittleEndian
+    response_ds1.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian 
+    response_ds1.file_meta.ImplementationClassUID = PYDICOM_IMPLEMENTATION_UID # Add this
 
+    response_ds1.is_little_endian = True # These are for encoding, not strictly part of file_meta
+    response_ds1.is_implicit_VR = False 
 
     mock_server.add_c_find_response(find_query, [response_ds1])
-    mock_server.add_dataset_for_get(response_ds1) # Make it available for C-GET
+    mock_server.add_dataset_for_get(response_ds1) 
     print(f"Added C-FIND response for PatientID '12345' and Modality 'CT'")
     print(f"Dataset {response_ds1.SOPInstanceUID} available for C-GET.")
 

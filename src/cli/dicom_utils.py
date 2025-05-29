@@ -18,24 +18,27 @@ from pydicom.errors import InvalidDicomError
 from pynetdicom import AE, debug_logger, evt
 from pynetdicom.association import Association
 from pynetdicom.dimse_primitives import C_FIND, C_GET # C_ECHO, C_MOVE, C_STORE not directly used as types
-from pynetdicom.sop_class import (
-    VerificationSOPClass,
-    PatientRootQueryRetrieveInformationModelFind,
-    StudyRootQueryRetrieveInformationModelFind,
-    PatientRootQueryRetrieveInformationModelMove,
-    StudyRootQueryRetrieveInformationModelMove,
-    PatientRootQueryRetrieveInformationModelGet,
-    StudyRootQueryRetrieveInformationModelGet,
-    CompositeInstanceRootRetrieveGet,
-    StoragePresentationContexts,
-    RTPlanStorage,
-    CTImageStorage,
-    MRImageStorage,
-    RTStructureSetStorage,
-    RTDoseStorage,
-    RTBeamsTreatmentRecordStorage,
-)
-from pynetdicom.status import Status
+import pynetdicom.sop_class as sop_class
+from pynetdicom.presentation import StoragePresentationContexts # Import directly
+# Commented out direct imports, will use sop_class.ClassName instead
+# from pynetdicom.sop_class import (
+#     VerificationSOPClass,
+#     PatientRootQueryRetrieveInformationModelFind,
+#     StudyRootQueryRetrieveInformationModelFind,
+#     PatientRootQueryRetrieveInformationModelMove,
+#     StudyRootQueryRetrieveInformationModelMove,
+#     PatientRootQueryRetrieveInformationModelGet,
+#     StudyRootQueryRetrieveInformationModelGet,
+#     CompositeInstanceRootRetrieveGet,
+#     StoragePresentationContexts,
+#     RTPlanStorage,
+#     CTImageStorage,
+#     MRImageStorage,
+#     RTStructureSetStorage,
+#     RTDoseStorage,
+#     RTBeamsTreatmentRecordStorage,
+# )
+from pynetdicom import status as pynetdicom_status # Corrected import
 
 
 # Configure logger for this module
@@ -128,15 +131,15 @@ def _handle_echo_scu(args: argparse.Namespace):
     assoc = None # Ensure assoc is defined for finally block
     try:
         assoc = _establish_association(
-            args.aet, args.aec, args.host, args.port, [VerificationSOPClass]
+        args.aet, args.aec, args.host, args.port, [sop_class.VerificationSOPClass]
         )
         # No need to check 'if assoc:' because _establish_association now raises on failure
         status = assoc.send_c_echo()
         if status:
             logger.info(
-                f"C-ECHO status: 0x{status.Status:04X} ({Status.STATUS_SUCCESS.get(status.Status, 'Unknown Status')})"
+                f"C-ECHO status: 0x{status.Status:04X}" # Simplified logging
             )
-            if status.Status != Status.Success:  # Not success
+            if status.Status != 0x0000:  # Not success (0x0000 is Success)
                 raise DicomOperationError(
                     f"C-ECHO failed with status 0x{status.Status:04X}"
                 )
@@ -168,12 +171,12 @@ def _on_find_response(
     Returns:
         True to continue the C-FIND operation (for Pending responses), False to stop.
     """
-    # Using pynetdicom.status.Status constants for comparison
-    if status_response.Status in (
-        Status.Success,
-        Status.Pending,
-        Status.PendingWarning,
-    ):
+    # Using integer status codes for comparison
+    # 0x0000: Success
+    # 0xFF00, 0xFF01: Pending
+    if status_response.Status == 0x0000 or \
+       status_response.Status == 0xFF00 or \
+       status_response.Status == 0xFF01: # Check for Success or any Pending
         if identifier:
             logger.info(
                 f"C-FIND RSP from {peer_ae_title}: Status 0x{status_response.Status:04X} (Pending/Success) - Found identifier:"
@@ -185,7 +188,7 @@ def _on_find_response(
                 f"C-FIND RSP from {peer_ae_title}: Status 0x{status_response.Status:04X} (Pending/Success) - No identifier data in this response."
             )
 
-        if status_response.Status == Status.Success:  # Final success response
+        if status_response.Status == 0x0000:  # Final success response
             logger.info(
                 f"C-FIND operation completed successfully with peer {peer_ae_title}."
             )
@@ -193,7 +196,7 @@ def _on_find_response(
         return True  # Continue for Pending status
 
     else:  # Failure, Cancel, etc.
-        error_msg = f"C-FIND RSP from {peer_ae_title}: Error - Status 0x{status_response.Status:04X} ({Status.STATUS_FAILURE.get(status_response.Status, 'Unknown Failure Status')})"
+        error_msg = f"C-FIND RSP from {peer_ae_title}: Error - Status 0x{status_response.Status:04X}" # Simplified logging
         if identifier and hasattr(identifier, "ErrorComment"):
             error_msg += f" - Error Comment: {identifier.ErrorComment}"
         logger.error(error_msg)
@@ -227,8 +230,8 @@ def _build_find_query_dataset(args: argparse.Namespace) -> Dataset:
 def _get_find_model(query_level: str) -> Any: # Return type is a SOP Class object
     """Gets the appropriate C-FIND model based on query level."""
     if query_level == "PATIENT":
-        return PatientRootQueryRetrieveInformationModelFind
-    return StudyRootQueryRetrieveInformationModelFind
+        return sop_class.PatientRootQueryRetrieveInformationModelFind
+    return sop_class.StudyRootQueryRetrieveInformationModelFind
 
 
 def _handle_find_scu(args: argparse.Namespace):
@@ -250,10 +253,12 @@ def _handle_find_scu(args: argparse.Namespace):
         ] = assoc.send_c_find(query_dataset, model)
         for status_rsp, identifier_rsp in responses:
             if not _on_find_response(status_rsp, identifier_rsp, args.aec):
-                if status_rsp.Status != Status.Success and status_rsp.Status not in (Status.Pending, Status.PendingWarning):
-                    # If _on_find_response returned False due to an error status
+                # If _on_find_response returned False, check if it was due to a non-Success/non-Pending status
+                if not (status_rsp.Status == 0x0000 or \
+                        status_rsp.Status == 0xFF00 or \
+                        status_rsp.Status == 0xFF01):
                     raise DicomOperationError(f"C-FIND failed with status 0x{status_rsp.Status:04X}")
-                break  # Stop if handler returns False (e.g., on success or error)
+                break  # Stop if handler returns False (either Success or error classified by _on_find_response)
     except (DicomConnectionError, DicomOperationError) as e:
         logger.error(f"C-FIND operation failed: {e}")
         raise
@@ -266,35 +271,47 @@ def _handle_find_scu(args: argparse.Namespace):
 # --- C-MOVE SCU ---
 def _on_move_response(event: evt.Event):
     """
-    Callback handler for C-MOVE interim responses (from EVT_C_MOVE_RSP).
+    Callback handler for C-MOVE interim responses (from EVT_C_MOVE).
     """
-    status = event.status
-    dataset = event.dataset
+    # When Event is constructed as Event(assoc, EVT_C_MOVE, dataset=identifier, status_dataset=status_ds)
+    # event.status_dataset is the DICOM Dataset containing the status from the peer.
+    # event.dataset is the identifier dataset.
+    status_ds = event.status_dataset 
+    identifier_ds = event.dataset 
 
-    logger.info(
-        f"C-MOVE Response: Status 0x{status.Status:04X} ({Status.STATUS_CHOICES.get(status.Status, 'Unknown Status')})"
-    )
+    if status_ds is not None and hasattr(status_ds, 'Status'):
+        status_value = status_ds.Status
+        logger.info(
+            f"C-MOVE Response: Status 0x{status_value:04X}"
+        )
 
-    if dataset:
-        # Standard C-MOVE response elements
-        for attr_name in [
-            "NumberOfRemainingSuboperations",
-            "NumberOfCompletedSuboperations",
-            "NumberOfWarningSuboperations",
-            "NumberOfFailedSuboperations",
-        ]:
-            if hasattr(dataset, attr_name):
-                logger.info(
-                    f"  {attr_name.replace('NumberOf', '').strip()}: {getattr(dataset, attr_name)}"
-                )
+        # Log details from the status_ds (which should be the C-MOVE response status dataset)
+        # or from identifier_ds if it contains NumberOf... elements (less common for final C-MOVE rsp)
+        # For C-MOVE, NumberOf... elements are typically in the status_ds itself.
+        dataset_to_check_for_ops = status_ds # NumberOf... elements are in the status dataset for C-MOVE
+        
+        if dataset_to_check_for_ops:
+            for attr_name in [
+                "NumberOfRemainingSuboperations",
+                "NumberOfCompletedSuboperations",
+                "NumberOfWarningSuboperations",
+                "NumberOfFailedSuboperations",
+            ]:
+                if hasattr(dataset_to_check_for_ops, attr_name):
+                    logger.info(
+                        f"  {attr_name.replace('NumberOf', '').strip()}: {getattr(dataset_to_check_for_ops, attr_name)}"
+                    )
 
-    if status.Status not in (
-        Status.Success,
-        Status.Pending,
-        Status.PendingWarning,
-    ):
-        if hasattr(status, "ErrorComment") and status.ErrorComment:
-            logger.error(f"  Error Comment from C-MOVE RSP: {status.ErrorComment}")
+        # Check if status is an error/failure/warning (not Success or Pending)
+        if not (status_value == 0x0000 or \
+                status_value == 0xFF00 or \
+                status_value == 0xFF01): # Not Success or Pending
+            # ErrorComment is usually in the status dataset for C-MOVE
+            if hasattr(status_ds, "ErrorComment") and status_ds.ErrorComment:
+                logger.error(f"  Error Comment from C-MOVE RSP: {status_ds.ErrorComment}")
+    else:
+        logger.error("C-MOVE Response: No status dataset or Status attribute found in event.")
+
 
 
 def _build_move_identifier_dataset(args: argparse.Namespace) -> Dataset:
@@ -319,8 +336,8 @@ def _build_move_identifier_dataset(args: argparse.Namespace) -> Dataset:
 def _get_move_model(query_level: str) -> Any: # Return type is a SOP Class object
     """Gets the appropriate C-MOVE model based on query level."""
     if query_level == "PATIENT":
-        return PatientRootQueryRetrieveInformationModelMove
-    return StudyRootQueryRetrieveInformationModelMove
+        return sop_class.PatientRootQueryRetrieveInformationModelMove
+    return sop_class.StudyRootQueryRetrieveInformationModelMove
 
 
 def _handle_move_scu(args: argparse.Namespace):
@@ -332,18 +349,45 @@ def _handle_move_scu(args: argparse.Namespace):
         f"destination AET: {args.move_dest_aet}"
     )
 
-    if args.query_level == "IMAGE":
-        # This is more of an input validation / user guidance issue.
-        logger.error(
-            "C-MOVE at IMAGE level is not typically supported directly. Please move a STUDY or SERIES."
-        )
-        # No DicomOperationError raised here as it's a usage note.
-        # main() will not exit with error unless an exception is raised.
-        return
+    # if args.query_level == "IMAGE": # Allow IMAGE level C-MOVE for these tests/workflows
+    #     # This is more of an input validation / user guidance issue.
+    #     logger.error(
+    #         "C-MOVE at IMAGE level is not typically supported directly. Please move a STUDY or SERIES."
+    #     )
+    #     # No DicomOperationError raised here as it's a usage note.
+    #     # main() will not exit with error unless an exception is raised.
+    #     return
 
     identifier_dataset = _build_move_identifier_dataset(args)
+    # For IMAGE level C-MOVE, the identifier must also contain SOPInstanceUID.
+    # _build_move_identifier_dataset currently does not add SOPInstanceUID.
+    # This needs to be added if query_level is IMAGE.
+    # However, the args passed to _handle_move_scu from the test's side_effect *does* include sop_instance_uid.
+    # The _build_move_identifier_dataset is used if _handle_move_scu is called as a CLI command.
+    # The args namespace passed from the side_effect is more complete.
+    # The `identifier_dataset` for C-MOVE should be built from `args` directly.
+    # Let's ensure SOPInstanceUID is part of the identifier if query_level is IMAGE.
+    if args.query_level == "IMAGE" and hasattr(args, 'sop_instance_uid') and args.sop_instance_uid:
+        identifier_dataset.SOPInstanceUID = args.sop_instance_uid
+        # Also ensure PatientID, Study UID, Series UID are present if known from args,
+        # as _build_move_identifier_dataset might not have access to the full context.
+        # The Namespace 'args' passed to _handle_move_scu from the side_effect is comprehensive.
+        # So, we should primarily rely on 'args' to build the identifier for C-MOVE.
+        
+        # Re-building identifier_dataset based on args for C-MOVE
+        identifier_dataset = Dataset()
+        identifier_dataset.QueryRetrieveLevel = args.query_level
+        if hasattr(args, 'patient_id') and args.patient_id:
+            identifier_dataset.PatientID = args.patient_id
+        if hasattr(args, 'study_uid') and args.study_uid:
+            identifier_dataset.StudyInstanceUID = args.study_uid
+        if hasattr(args, 'series_uid') and args.series_uid:
+            identifier_dataset.SeriesInstanceUID = args.series_uid
+        if hasattr(args, 'sop_instance_uid') and args.sop_instance_uid: # Redundant given outer if, but safe
+            identifier_dataset.SOPInstanceUID = args.sop_instance_uid
+            
     model = _get_move_model(args.query_level)
-    event_handlers = [(evt.EVT_C_MOVE_RSP, _on_move_response)]
+    event_handlers = [(evt.EVT_C_MOVE, _on_move_response)] # Corrected event type
     assoc = None
     try:
         assoc = _establish_association(
@@ -358,11 +402,14 @@ def _handle_move_scu(args: argparse.Namespace):
         for status_rsp, _ in responses: # identifier_rsp is usually None or not useful for final C-MOVE
             # The _on_move_response handler also logs interim responses.
             # We call it again for the final response for consistent logging.
-            # A more refined approach might be to have a separate final response log.
-            _on_move_response(evt.Event(assoc, status_rsp, None)) # Pass None as identifier for final
-            if status_rsp.Status != Status.Success:
+            # The _on_move_response handler (bound via event_handlers) will be called by pynetdicom
+            # for all responses, including the final one.
+            # This loop is just to get the final status for raising an overall operation error if needed.
+            # No need to manually call _on_move_response here again with a manually constructed Event.
+            # status_rsp is the final status dataset.
+            if status_rsp.Status != 0x0000: # Not Success
                 raise DicomOperationError(
-                    f"C-MOVE failed with status 0x{status_rsp.Status:04X}"
+                    f"C-MOVE failed with status 0x{status_rsp.Status:04X} (final status)"
                 )
     except (DicomConnectionError, DicomOperationError) as e:
         logger.error(f"C-MOVE operation failed: {e}")
@@ -461,13 +508,13 @@ def _get_get_model(query_level: str) -> Any: # Return type is a SOP Class object
     """Gets the appropriate C-GET model based on query level."""
     if query_level == "IMAGE":
         # CompositeInstanceRootRetrieveGet is often preferred for specific instance retrieval
-        return CompositeInstanceRootRetrieveGet
+        return sop_class.CompositeInstanceRootRetrieveGet
     elif query_level == "SERIES":
-        return StudyRootQueryRetrieveInformationModelGet # Or PatientRoot if PatientID is the root
+        return sop_class.StudyRootQueryRetrieveInformationModelGet # Or PatientRoot if PatientID is the root
     elif query_level == "STUDY":
-        return StudyRootQueryRetrieveInformationModelGet # Or PatientRoot
+        return sop_class.StudyRootQueryRetrieveInformationModelGet # Or PatientRoot
     elif query_level == "PATIENT":
-        return PatientRootQueryRetrieveInformationModelGet
+        return sop_class.PatientRootQueryRetrieveInformationModelGet
     else:
         # Fallback or error, though _build_get_identifier_dataset should prevent unknown levels
         logger.error(f"Unsupported query level for C-GET: {query_level}")
@@ -502,7 +549,7 @@ def _handle_get_scu(args: argparse.Namespace):
         event_handlers = [(evt.EVT_C_STORE, bound_on_get_response)]
 
         # Contexts: The C-GET model itself, plus storage contexts for receiving files
-        requested_contexts = [model] + StoragePresentationContexts 
+        requested_contexts = [model] + StoragePresentationContexts # Use direct import
         # Filter out any None values from StoragePresentationContexts, if any (though it's usually well-formed)
         requested_contexts = [ctx for ctx in requested_contexts if ctx is not None]
 
@@ -517,8 +564,7 @@ def _handle_get_scu(args: argparse.Namespace):
         for status_rsp, ds_rsp in responses: # ds_rsp is usually None for C-GET final response
             if status_rsp:
                 logger.info(
-                    f"C-GET RSP: Status 0x{status_rsp.Status:04X} "
-                    f"({Status.STATUS_CHOICES.get(status_rsp.Status, 'Unknown Status')})"
+                    f"C-GET RSP: Status 0x{status_rsp.Status:04X} " # Simplified logging
                 )
                 # Log sub-operations details if present in the final C-GET response
                 if ds_rsp: # Some SCPs might send a dataset with the final C-GET response
@@ -533,7 +579,9 @@ def _handle_get_scu(args: argparse.Namespace):
                                 f"  {attr_name.replace('NumberOf', '').strip()}: {getattr(ds_rsp, attr_name)}"
                             )
                 
-                if status_rsp.Status not in (Status.Success, Status.Pending, Status.PendingWarning):
+                if not (status_rsp.Status == 0x0000 or \
+                        status_rsp.Status == 0xFF00 or \
+                        status_rsp.Status == 0xFF01): # Not Success or Pending
                     # If _on_get_response handles C-STORE failures, this might be redundant,
                     # but it's good to catch C-GET level failures.
                     error_msg = f"C-GET operation failed with status 0x{status_rsp.Status:04X}."
@@ -572,12 +620,12 @@ def _on_store_response(event: evt.Event):
     ):
         sop_instance_uid = event.context.dataset.SOPInstanceUID
 
-    if status.Status == Status.Success:
+    if status.Status == 0x0000: # Success
         logger.info(f"C-STORE success for SOP Instance: {sop_instance_uid}")
     else:
         error_message = (
             f"C-STORE failed for SOP Instance: {sop_instance_uid} "
-            f"with status 0x{status.Status:04X} ({Status.STATUS_FAILURE.get(status.Status, 'Unknown Failure')})"
+            f"with status 0x{status.Status:04X}" # Simplified logging
         )
         if hasattr(status, "ErrorComment") and status.ErrorComment:
             error_message += f" - Error: {status.ErrorComment}"
@@ -623,12 +671,12 @@ def _get_dicom_files_from_path(filepath: str) -> List[str]:
 def _get_storage_contexts() -> List[Any]:
     """Returns a list of common DICOM storage presentation contexts."""
     return [
-        RTPlanStorage,
-        CTImageStorage,
-        MRImageStorage,
-        RTStructureSetStorage,
-        RTDoseStorage,
-        RTBeamsTreatmentRecordStorage,
+        sop_class.RTPlanStorage,
+        sop_class.CTImageStorage,
+        sop_class.MRImageStorage,
+        sop_class.RTStructureSetStorage,
+        sop_class.RTDoseStorage,
+        sop_class.RTBeamsTreatmentRecordStorage,
         "1.2.840.10008.5.1.4.1.1.2",  # CT Image Storage (string UID)
         "1.2.840.10008.5.1.4.1.1.4",  # MR Image Storage (string UID)
         "1.2.840.10008.5.1.4.1.1.481.1",  # RT Plan Storage (string UID)
@@ -680,15 +728,12 @@ def _handle_store_scu(args: argparse.Namespace):
                     logger.debug(
                         f"C-STORE DIMSE service for {fpath} reported status: 0x{status_rsp.Status:04X}"
                     )
-                    if status_rsp.Status == Status.Success:
+                    if status_rsp.Status == 0x0000: # Success
                         files_sent_successfully += 1
-                    elif status_rsp.Status not in (
-                        Status.Pending,
-                        Status.PendingWarning,
-                    ):
+                    elif status_rsp.Status != 0xFF00 and status_rsp.Status != 0xFF01: # Not Pending
                         files_with_dimse_errors += 1
                         logger.error(
-                            f"  DIMSE service error for {fpath}: {Status.STATUS_FAILURE.get(status_rsp.Status, 'Unknown Failure')}"
+                            f"  DIMSE service error for {fpath}: Status 0x{status_rsp.Status:04X}" # Simplified logging
                         )
                         if hasattr(status_rsp, "ErrorComment"):
                             logger.error(

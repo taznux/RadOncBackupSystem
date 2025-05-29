@@ -9,7 +9,10 @@ details, backup parameters, and data source types (ARIA, MIM, Mosaiq).
 import argparse
 # import functools # For functools.partial - No longer needed
 # import io - No longer needed for handle_store
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from typing import Optional, Dict, Any, Tuple, List 
 from argparse import Namespace # Added
 
