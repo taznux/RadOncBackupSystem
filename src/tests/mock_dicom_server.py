@@ -6,9 +6,12 @@ from pynetdicom import AE, evt
 from pynetdicom.sop_class import (
     StudyRootQueryRetrieveInformationModelFind,
     StudyRootQueryRetrieveInformationModelMove,
+    StudyRootQueryRetrieveInformationModelGet, # Added for C-GET
+    CompositeInstanceRootRetrieveGet,        # Added for C-GET
+    # PatientRootQueryRetrieveInformationModelGet, # Consider if needed
 )
 from pynetdicom.presentation import PresentationContext, StoragePresentationContexts
-from pydicom.uid import PYDICOM_IMPLEMENTATION_UID, ImplicitVRLittleEndian # Added for fallback
+from pydicom.uid import PYDICOM_IMPLEMENTATION_UID, ImplicitVRLittleEndian, ExplicitVRLittleEndian # Added ExplicitVRLittleEndian
 
 
 # Configure basic logging for the mock server
@@ -43,8 +46,9 @@ class MockDicomServer:
 
         self.c_find_responses: dict[frozenset, list[Dataset]] = {}
         self.received_datasets: list[Dataset] = []
+        self.datasets_for_get: list[Dataset] = [] # Added for C-GET
         self.c_store_handler_override = None
-        self.last_move_destination_aet: Optional[str] = None # Added to store move destination
+        self.last_move_destination_aet: Optional[str] = None 
         self._server_thread = None
         self._server_instance = None
 
@@ -63,9 +67,13 @@ class MockDicomServer:
         # but being explicit can be useful. Default transfer syntaxes for Q/R are:
         # Implicit VR Little Endian, Explicit VR Little Endian, Explicit VR Big Endian (deprecated)
         # For this mock, we'll primarily use ImplicitVRLittleEndian & ExplicitVRLittleEndian
-        transfer_syntaxes = ['1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2']
+        transfer_syntaxes = [ImplicitVRLittleEndian, ExplicitVRLittleEndian, '1.2.840.10008.1.2.2'] # Added common UIDs
         self.ae.add_supported_context(StudyRootQueryRetrieveInformationModelFind, transfer_syntaxes)
         self.ae.add_supported_context(StudyRootQueryRetrieveInformationModelMove, transfer_syntaxes)
+        # Add C-GET contexts
+        self.ae.add_supported_context(StudyRootQueryRetrieveInformationModelGet, transfer_syntaxes)
+        self.ae.add_supported_context(CompositeInstanceRootRetrieveGet, transfer_syntaxes)
+        # self.ae.add_supported_context(PatientRootQueryRetrieveInformationModelGet, transfer_syntaxes)
 
 
     def handle_find(self, event):
@@ -193,6 +201,91 @@ class MockDicomServer:
         self.received_datasets.append(ds)
         return 0x0000  # Success status
 
+    def handle_get(self, event):
+        """
+        Handles C-GET requests.
+        This method is registered as a callback for the evt.EVT_C_GET event.
+        """
+        logger.info(f"C-GET request received for AET: {self.ae_title}.")
+        identifier = event.identifier
+        logger.debug(f"C-GET Identifier: {identifier}")
+
+        # Simplistic implementation: find matching SOPInstanceUID in self.datasets_for_get
+        # A more complete implementation would handle QueryRetrieveLevel (PATIENT, STUDY, SERIES, IMAGE)
+        # and match accordingly. For now, we focus on IMAGE level (SOPInstanceUID).
+        
+        sop_instance_uid_to_get = identifier.get("SOPInstanceUID")
+        if not sop_instance_uid_to_get:
+            logger.error("C-GET request identifier does not contain SOPInstanceUID. Cannot process.")
+            yield (0xA900, None) # Unable to process
+            return
+
+        datasets_to_send = [
+            ds for ds in self.datasets_for_get if ds.SOPInstanceUID == sop_instance_uid_to_get
+        ]
+
+        if not datasets_to_send:
+            logger.warning(f"No datasets found for SOPInstanceUID {sop_instance_uid_to_get} in datasets_for_get.")
+            # A700: Refused: Out of Resources (Unable to calculate number of matches)
+            # A900: Error: Unable to process (Identifier does not match SOP Class)
+            # C0xx: Error: Unable to process (Cannot support query retrieve level)
+            yield (0xA700, None) 
+            return
+
+        number_of_matches = len(datasets_to_send)
+        completed_sub_ops = 0
+        failed_sub_ops = 0
+        warning_sub_ops = 0 # Not typically used for C-STORE sub-ops by SCP
+
+        # Send C-STORE sub-operations for each matching dataset
+        for i, ds_to_send in enumerate(datasets_to_send):
+            remaining_sub_ops = number_of_matches - (i + 1)
+            
+            # Yield Pending status before sending each C-STORE
+            status_ds = Dataset()
+            status_ds.NumberOfRemainingSuboperations = remaining_sub_ops
+            status_ds.NumberOfCompletedSuboperations = completed_sub_ops
+            status_ds.NumberOfFailedSuboperations = failed_sub_ops
+            status_ds.NumberOfWarningSuboperations = warning_sub_ops
+            yield (0xFF00, status_ds) # Pending
+
+            logger.info(f"Attempting C-STORE sub-operation for SOPInstanceUID: {ds_to_send.SOPInstanceUID}")
+            try:
+                # The C-GET SCU acts as a C-STORE SCP for these sub-operations.
+                # The association is event.assoc.
+                c_store_status = event.assoc.send_c_store(ds_to_send)
+                if c_store_status and c_store_status.Status == 0x0000:
+                    logger.info(f"C-STORE sub-operation for {ds_to_send.SOPInstanceUID} successful.")
+                    completed_sub_ops += 1
+                else:
+                    logger.error(f"C-STORE sub-operation for {ds_to_send.SOPInstanceUID} failed. Status: {c_store_status.Status if c_store_status else 'Unknown'}")
+                    failed_sub_ops += 1
+            except Exception as e:
+                logger.error(f"Exception during C-STORE sub-operation for {ds_to_send.SOPInstanceUID}: {e}", exc_info=True)
+                failed_sub_ops += 1
+        
+        # Final C-GET status
+        final_status_ds = Dataset()
+        final_status_ds.NumberOfRemainingSuboperations = 0
+        final_status_ds.NumberOfCompletedSuboperations = completed_sub_ops
+        final_status_ds.NumberOfFailedSuboperations = failed_sub_ops
+        final_status_ds.NumberOfWarningSuboperations = warning_sub_ops
+
+        if failed_sub_ops > 0 and completed_sub_ops > 0:
+            logger.info(f"C-GET completed with some failures. Completed: {completed_sub_ops}, Failed: {failed_sub_ops}")
+            yield (0xB000, final_status_ds) # Warning: Sub-operations Complete - One or more Failures
+        elif failed_sub_ops > 0:
+            logger.error(f"C-GET completed with all sub-operations failed. Failed: {failed_sub_ops}")
+            yield (0xC000, final_status_ds) # Error: Unable to process (or a more specific Cxxx code)
+        elif completed_sub_ops == number_of_matches:
+            logger.info(f"C-GET completed successfully. Completed: {completed_sub_ops}")
+            yield (0x0000, final_status_ds) # Success
+        else: # Should not happen if logic is correct, but as a fallback
+            logger.error("C-GET completed in an indeterminate state.")
+            yield (0xA900, final_status_ds) # Error: Unable to process
+        return
+
+
     def start(self):
         """
         Starts the DICOM server in a separate thread.
@@ -200,8 +293,8 @@ class MockDicomServer:
         handlers = [
             (evt.EVT_C_FIND, self.handle_find),
             (evt.EVT_C_STORE, self.handle_store),
-            (evt.EVT_C_MOVE, self.handle_move), # Added
-            # Optional: Add handlers for other events like EVT_C_ECHO if needed
+            (evt.EVT_C_MOVE, self.handle_move), 
+            (evt.EVT_C_GET, self.handle_get), # Added C-GET handler
             # (evt.EVT_C_ECHO, self.handle_echo),
         ]
         
@@ -235,7 +328,8 @@ class MockDicomServer:
         """
         self.c_find_responses.clear()
         self.received_datasets.clear()
-        self.last_move_destination_aet = None # Reset on server reset
+        self.datasets_for_get.clear() # Reset for C-GET
+        self.last_move_destination_aet = None 
 
     def add_c_find_response(self, query_criteria_dataset: Dataset, response_datasets: list[Dataset]):
         """
@@ -256,6 +350,28 @@ class MockDicomServer:
         # Using frozenset of items makes the key hashable and order-independent
         query_key = frozenset(key_items)
         self.c_find_responses[query_key] = response_datasets
+
+    def add_dataset_for_get(self, dataset: Dataset):
+        """
+        Adds a dataset that this mock server can "provide" via C-GET.
+        Ensure the dataset has SOPInstanceUID.
+        """
+        if not hasattr(dataset, "SOPInstanceUID") or not dataset.SOPInstanceUID:
+            logger.error("Dataset added for C-GET must have a SOPInstanceUID.")
+            return
+        # Ensure file_meta is present, as it's needed for C-STORE sub-operations
+        if not hasattr(dataset, 'file_meta'):
+            dataset.file_meta = Dataset()
+        if not dataset.file_meta.get('TransferSyntaxUID'): # Set a default if not present
+            dataset.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian 
+        if not dataset.file_meta.get('MediaStorageSOPClassUID'):
+            dataset.file_meta.MediaStorageSOPClassUID = dataset.SOPClassUID # Assume it's on the dataset
+        if not dataset.file_meta.get('MediaStorageSOPInstanceUID'):
+            dataset.file_meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
+            
+        self.datasets_for_get.append(dataset)
+        logger.info(f"Added dataset {dataset.SOPInstanceUID} to datasets_for_get list.")
+
 
 if __name__ == '__main__':
     # Example Usage (Optional)
@@ -283,19 +399,22 @@ if __name__ == '__main__':
     response_ds1.PatientID = "12345"
     response_ds1.PatientName = "Test^Patient"
     response_ds1.Modality = "CT"
-    response_ds1.SOPInstanceUID = "1.2.3.4.5.6.7.8.9.1" # Must be unique
+    response_ds1.SOPInstanceUID = "1.2.3.4.5.6.7.8.9.1" 
     response_ds1.StudyInstanceUID = "1.2.3.4.5"
     response_ds1.SeriesInstanceUID = "1.2.3.4.5.6"
-     # Add media storage SOP class UID if not present, required for C-STORE
+    response_ds1.SOPClassUID = '1.2.840.10008.5.1.4.1.1.2' # CT Image Storage
     response_ds1.file_meta = Dataset()
-    response_ds1.file_meta.MediaStorageSOPClassUID = '1.2.840.10008.5.1.4.1.1.2' # CT Image Storage
+    response_ds1.file_meta.MediaStorageSOPClassUID = response_ds1.SOPClassUID
     response_ds1.file_meta.MediaStorageSOPInstanceUID = response_ds1.SOPInstanceUID
+    response_ds1.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian # Example
     response_ds1.is_little_endian = True
-    response_ds1.is_implicit_VR = True
+    response_ds1.is_implicit_VR = False # For ExplicitVRLittleEndian
 
 
     mock_server.add_c_find_response(find_query, [response_ds1])
+    mock_server.add_dataset_for_get(response_ds1) # Make it available for C-GET
     print(f"Added C-FIND response for PatientID '12345' and Modality 'CT'")
+    print(f"Dataset {response_ds1.SOPInstanceUID} available for C-GET.")
 
     try:
         # Keep the server running for a while (e.g., for manual testing with a DICOM client)
