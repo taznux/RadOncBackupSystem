@@ -10,18 +10,24 @@ import logging
 import os
 import sys
 from typing import List, Tuple, Optional, Any, Iterator
+from functools import partial
 
-from pydicom import dcmread
+from pydicom import dcmread, dcmwrite
 from pydicom.dataset import Dataset
+from pydicom.errors import InvalidDicomError
 from pynetdicom import AE, debug_logger, evt
 from pynetdicom.association import Association
-from pynetdicom.dimse_primitives import C_FIND # C_ECHO, C_MOVE, C_STORE not directly used as types
+from pynetdicom.dimse_primitives import C_FIND, C_GET # C_ECHO, C_MOVE, C_STORE not directly used as types
 from pynetdicom.sop_class import (
     VerificationSOPClass,
     PatientRootQueryRetrieveInformationModelFind,
     StudyRootQueryRetrieveInformationModelFind,
     PatientRootQueryRetrieveInformationModelMove,
     StudyRootQueryRetrieveInformationModelMove,
+    PatientRootQueryRetrieveInformationModelGet,
+    StudyRootQueryRetrieveInformationModelGet,
+    CompositeInstanceRootRetrieveGet,
+    StoragePresentationContexts,
     RTPlanStorage,
     CTImageStorage,
     MRImageStorage,
@@ -367,6 +373,191 @@ def _handle_move_scu(args: argparse.Namespace):
             logger.info("Association released.")
 
 
+# --- C-GET SCU ---
+def _on_get_response(event: evt.Event, output_directory: str) -> int:
+    """
+    Handler for EVT_C_STORE events during a C-GET operation.
+    Saves the received DICOM dataset to a file.
+
+    Args:
+        event: The event send by the SCP.
+        output_directory: The directory to save the received DICOM files.
+
+    Returns:
+        Status code (0x0000 for success).
+    """
+    dataset = event.dataset
+    if not dataset:
+        logger.error("C-STORE sub-operation failed: No dataset received.")
+        return 0x0000 # Must return a status, even if nothing to save.
+
+    # pynetdicom makes the dataset read-only by default
+    dataset.is_little_endian = True  # Or whatever is appropriate
+    dataset.is_implicit_VR = True   # Or whatever is appropriate
+
+    try:
+        sop_instance_uid = dataset.SOPInstanceUID
+        filename = os.path.join(output_directory, f"{sop_instance_uid}.dcm")
+        logger.info(f"Received C-STORE request for SOPInstanceUID: {sop_instance_uid}")
+        dcmwrite(filename, dataset, write_like_original=False) # write_like_original=False as dataset is constructed
+        logger.info(f"Successfully saved DICOM file to {filename}")
+        return 0x0000  # Success status for C-STORE sub-operation
+    except InvalidDicomError as e:
+        logger.error(f"Failed to save DICOM file: Invalid DICOM data. {e}")
+        return 0xA700 # Cannot understand
+    except AttributeError:
+        logger.error("Failed to save DICOM file: SOPInstanceUID missing in dataset.")
+        # This is an issue with the dataset provided by the C-GET SCP
+        return 0xA900 # Processing failure
+    except Exception as e:
+        logger.error(f"Failed to save DICOM file due to an unexpected error: {e}")
+        return 0xA700 # Refused: Out of resources (or other general failure)
+
+
+def _build_get_identifier_dataset(args: argparse.Namespace) -> Dataset:
+    """
+    Builds the DICOM Dataset for a C-GET query based on CLI arguments.
+    Determines QueryRetrieveLevel based on the most specific UID provided.
+    """
+    ds = Dataset()
+    # Default to PATIENT level, will be overridden if more specific UIDs are present
+    ds.QueryRetrieveLevel = "PATIENT" 
+
+    if args.patient_id:
+        ds.PatientID = args.patient_id
+    else:
+        # PatientID is required for PATIENT/STUDY/SERIES level GETs in Patient Root
+        # For CompositeInstanceRootRetrieveGet, it's not strictly required in the identifier
+        # but good practice to include if known.
+        ds.PatientID = "" # Or "*" if SCP requires it for non-image level GETs
+
+    if args.study_uid:
+        ds.StudyInstanceUID = args.study_uid
+        ds.QueryRetrieveLevel = "STUDY"
+    else:
+        ds.StudyInstanceUID = ""
+
+    if args.series_uid:
+        ds.SeriesInstanceUID = args.series_uid
+        ds.QueryRetrieveLevel = "SERIES"
+    else:
+        ds.SeriesInstanceUID = ""
+
+    if args.sop_instance_uid:
+        ds.SOPInstanceUID = args.sop_instance_uid
+        ds.QueryRetrieveLevel = "IMAGE"
+    else:
+        ds.SOPInstanceUID = ""
+    
+    # Ensure at least one UID is provided.
+    if not args.patient_id and not args.study_uid and not args.series_uid and not args.sop_instance_uid:
+        raise InvalidInputError("At least one UID (PatientID, StudyUID, SeriesUID, or SOPInstanceUID) must be provided for C-GET.")
+
+    logger.debug(f"C-GET identifier dataset built with QueryRetrieveLevel: {ds.QueryRetrieveLevel}")
+    return ds
+
+
+def _get_get_model(query_level: str) -> Any: # Return type is a SOP Class object
+    """Gets the appropriate C-GET model based on query level."""
+    if query_level == "IMAGE":
+        # CompositeInstanceRootRetrieveGet is often preferred for specific instance retrieval
+        return CompositeInstanceRootRetrieveGet
+    elif query_level == "SERIES":
+        return StudyRootQueryRetrieveInformationModelGet # Or PatientRoot if PatientID is the root
+    elif query_level == "STUDY":
+        return StudyRootQueryRetrieveInformationModelGet # Or PatientRoot
+    elif query_level == "PATIENT":
+        return PatientRootQueryRetrieveInformationModelGet
+    else:
+        # Fallback or error, though _build_get_identifier_dataset should prevent unknown levels
+        logger.error(f"Unsupported query level for C-GET: {query_level}")
+        raise DicomOperationError(f"Unsupported query level for C-GET: {query_level}")
+
+
+def _handle_get_scu(args: argparse.Namespace):
+    """
+    Handles the C-GET SCU operation.
+    """
+    logger.info(
+        f"Performing C-GET from {args.aec} at {args.host}:{args.port} to AET {args.aet}, output to {args.out_dir}"
+    )
+
+    # Ensure output directory exists
+    try:
+        os.makedirs(args.out_dir, exist_ok=True)
+        logger.info(f"Output directory: {args.out_dir}")
+    except OSError as e:
+        raise InvalidInputError(f"Could not create output directory {args.out_dir}: {e}")
+
+    assoc = None
+    try:
+        identifier_dataset = _build_get_identifier_dataset(args)
+        # Query level is implicitly determined by the UIDs in identifier_dataset and used for model selection
+        query_level = identifier_dataset.QueryRetrieveLevel 
+        model = _get_get_model(query_level)
+
+        # Prepare event handlers
+        # We need to pass the output directory to the _on_get_response handler
+        bound_on_get_response = partial(_on_get_response, output_directory=args.out_dir)
+        event_handlers = [(evt.EVT_C_STORE, bound_on_get_response)]
+
+        # Contexts: The C-GET model itself, plus storage contexts for receiving files
+        requested_contexts = [model] + StoragePresentationContexts 
+        # Filter out any None values from StoragePresentationContexts, if any (though it's usually well-formed)
+        requested_contexts = [ctx for ctx in requested_contexts if ctx is not None]
+
+
+        assoc = _establish_association(
+            args.aet, args.aec, args.host, args.port, requested_contexts, event_handlers
+        )
+
+        responses: Iterator[Tuple[Any, Optional[Dataset]]] = assoc.send_c_get(identifier_dataset, model)
+
+        # Process C-GET responses
+        for status_rsp, ds_rsp in responses: # ds_rsp is usually None for C-GET final response
+            if status_rsp:
+                logger.info(
+                    f"C-GET RSP: Status 0x{status_rsp.Status:04X} "
+                    f"({Status.STATUS_CHOICES.get(status_rsp.Status, 'Unknown Status')})"
+                )
+                # Log sub-operations details if present in the final C-GET response
+                if ds_rsp: # Some SCPs might send a dataset with the final C-GET response
+                    for attr_name in [
+                        "NumberOfRemainingSuboperations",
+                        "NumberOfCompletedSuboperations",
+                        "NumberOfWarningSuboperations",
+                        "NumberOfFailedSuboperations",
+                    ]:
+                        if hasattr(ds_rsp, attr_name):
+                            logger.info(
+                                f"  {attr_name.replace('NumberOf', '').strip()}: {getattr(ds_rsp, attr_name)}"
+                            )
+                
+                if status_rsp.Status not in (Status.Success, Status.Pending, Status.PendingWarning):
+                    # If _on_get_response handles C-STORE failures, this might be redundant,
+                    # but it's good to catch C-GET level failures.
+                    error_msg = f"C-GET operation failed with status 0x{status_rsp.Status:04X}."
+                    if hasattr(status_rsp, "ErrorComment") and status_rsp.ErrorComment:
+                        error_msg += f" Error Comment: {status_rsp.ErrorComment}"
+                    raise DicomOperationError(error_msg)
+            else:
+                # This should ideally not happen if the association is healthy
+                raise DicomOperationError("C-GET failed: No response status from SCP.")
+        
+        logger.info("C-GET operation completed.") # Further success details logged by _on_get_response
+
+    except (DicomConnectionError, DicomOperationError, InvalidInputError) as e:
+        logger.error(f"C-GET operation failed: {e}")
+        raise
+    except Exception as e: # Catch any other unexpected errors
+        logger.error(f"An unexpected error occurred during C-GET: {e}", exc_info=True)
+        raise DicomUtilsError(f"Unexpected C-GET error: {e}") from e
+    finally:
+        if assoc and assoc.is_established:
+            assoc.release()
+            logger.info("Association released.")
+
+
 # --- C-STORE SCU ---
 def _on_store_response(event: evt.Event):
     """
@@ -632,6 +823,29 @@ def _setup_parsers() -> argparse.ArgumentParser:
     )
     store_parser.set_defaults(func=_handle_store_scu)
 
+    get_parser = subparsers.add_parser(
+        "get", help="Perform C-GET.", parents=[common_parser]
+    )
+    get_parser.add_argument(
+        "--patient-id", help="Patient ID for the C-GET operation."
+    )
+    get_parser.add_argument(
+        "--study-uid", help="Study Instance UID for the C-GET operation."
+    )
+    get_parser.add_argument(
+        "--series-uid", help="Series Instance UID for the C-GET operation."
+    )
+    get_parser.add_argument(
+        "--sop-instance-uid",
+        help="SOP Instance UID for the C-GET operation (specific image).",
+    )
+    get_parser.add_argument(
+        "--out-dir",
+        required=True,
+        help="Directory to save received DICOM files.",
+    )
+    get_parser.set_defaults(func=_handle_get_scu)
+    
     return parser
 
 
@@ -668,23 +882,52 @@ def main():
         try:
             args.func(args)
             # Assuming success if no DicomUtilsError was raised by handlers
-            sys.exit(0) 
+            # Removed sys.exit(0) for library compatibility
         except DicomUtilsError as e:
             # Error message is already logged by the handler or _establish_association
-            # Print a concise error to stderr for the user.
+            # Print a concise error to stderr for the user when run as CLI.
+            # Re-raise for library use.
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            raise # Re-raise for library use
         except Exception as e:  # Catch any other unexpected errors
             logger.critical(
                 f"An unexpected critical error occurred: {e}", exc_info=True
             )
             print(f"An unexpected critical error occurred: {e}", file=sys.stderr)
-            sys.exit(1)
+            raise DicomUtilsError(f"An unexpected critical error occurred: {e}") from e # Wrap and re-raise
     else:
         # Should not be reached if subparsers are 'required'
         parser.print_help(sys.stderr) # Print help to stderr for errors
-        sys.exit(2) # Standard exit code for command line usage errors
+        # Removed sys.exit(2) for library compatibility
+        # Raise an error or let the caller handle it (e.g. if main is called directly without args)
+        raise InvalidInputError("No command provided to DICOM utility.")
 
 
 if __name__ == "__main__":
+    # This block now handles CLI execution and exit codes explicitly
+    parser = _setup_parsers()
+    args = parser.parse_args()
+
+    # Configure logging level based on verbosity
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        debug_logger() 
+    else:
+        if logger.level == logging.NOTSET or logger.level > logging.INFO:
+            logger.setLevel(logging.INFO)
+    
+    if not logging.getLogger().hasHandlers():
+         logging.basicConfig(
+             level=logger.level,
+             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+             stream=sys.stdout,
+         )
+
+    try:
+        main() # Call the refactored main which now raises exceptions
+        sys.exit(0) # Explicit success exit for CLI
+    except DicomUtilsError:
+        sys.exit(1) # Specific exit code for DicomUtilsError
+    except Exception:
+        sys.exit(1) # General error exit code
     main()

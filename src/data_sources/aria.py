@@ -78,10 +78,9 @@ class ARIA(DataSource):
         logger.info(f"C-FIND query to ARIA found {len(uids)} SOPInstanceUIDs.")
         return uids
 
-    def transfer(self, move_dataset: Dataset, qr_scp: dict, store_scp: dict, handle_store: callable):
+    def transfer(self, move_dataset: Dataset, qr_scp: dict, backup_destination_aet: str, calling_aet: str) -> bool:
         """
-        Performs a C-MOVE operation to retrieve data from ARIA.
-        This method starts a temporary local C-STORE SCP to receive the data moved from ARIA.
+        Performs a C-MOVE operation to transfer data from ARIA directly to a specified backup destination AET.
 
         :param move_dataset: A pydicom Dataset containing parameters for the C-MOVE request
                              (e.g., PatientID, StudyInstanceUID, SeriesInstanceUID).
@@ -89,75 +88,72 @@ class ARIA(DataSource):
         :type move_dataset: pydicom.dataset.Dataset
         :param qr_scp: Dictionary with ARIA QR SCP details: {'IP', 'Port', 'AETitle'}.
         :type qr_scp: dict
-        :param store_scp: Dictionary for the local C-STORE SCP: {'IP', 'Port'}.
-                          The AE Title for this local SCP will be 'ARIA_SCP_TEMP'.
-        :type store_scp: dict
-        :param handle_store: Event handler (callable) for EVT_C_STORE, e.g., def handle_store(event): ...
-        :type handle_store: callable
-        :raises Exception: Network or DICOM protocol errors.
+        :param backup_destination_aet: The AE Title of the final backup destination (e.g., Orthanc).
+        :type backup_destination_aet: str
+        :param calling_aet: The AE Title of this application initiating the C-MOVE.
+        :type calling_aet: str
+        :return: True if the C-MOVE operation reported success (0x0000), False otherwise.
+        :rtype: bool
+        :raises Exception: Can raise exceptions for network or DICOM protocol errors if not handled by pynetdicom.
         """
         
-        # Define a temporary AE Title for our local C-STORE SCP.
-        # This SCP will be started to receive the data from the C-MOVE operation.
-        local_scp_aet = "ARIA_SCP_TEMP"
-        ae = AE(ae_title=local_scp_aet)
-        
-        # Add requested context for C-MOVE SCU operation
+        ae = AE(ae_title=calling_aet)
         ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
+        # No local SCP setup needed anymore
         
-        # Configure supported contexts for the local C-STORE SCP part.
-        # This allows our local SCP to accept storage of various DICOM objects.
-        ae.supported_contexts = StoragePresentationContexts
-        
-        # Register the event handler for incoming C-STORE requests (data being received)
-        handlers = [(evt.EVT_C_STORE, handle_store)]
-        
-        logger.info(f"Starting temporary C-STORE SCP on {store_scp['IP']}:{store_scp['Port']} with AET {local_scp_aet} for C-MOVE.")
-        # Start the local SCP server in non-blocking mode.
-        scp_server = ae.start_server((store_scp['IP'], store_scp['Port']), block=False, evt_handlers=handlers)
+        success_flag = False # Flag to track if C-MOVE was successful
 
-        logger.info(f"Attempting C-MOVE association to ARIA QR SCP: {qr_scp['AETitle']} at {qr_scp['IP']}:{qr_scp['Port']}")
-        # Associate with the remote ARIA C-MOVE SCP.
+        logger.info(f"Attempting C-MOVE association to ARIA QR SCP: {qr_scp['AETitle']} "
+                    f"at {qr_scp['IP']}:{qr_scp['Port']} from AET {calling_aet}.")
         assoc = ae.associate(qr_scp['IP'], qr_scp['Port'], ae_title=qr_scp['AETitle'])
         
         if assoc.is_established:
-            logger.info(f"C-MOVE Association established with ARIA. Sending C-MOVE request, destination AET: {local_scp_aet}.")
+            logger.info(f"C-MOVE Association established with ARIA. Sending C-MOVE request for destination AET: {backup_destination_aet}.")
             try:
-                # Send the C-MOVE request, telling ARIA to send data to our local_scp_aet.
-                responses = assoc.send_c_move(move_dataset, local_scp_aet, StudyRootQueryRetrieveInformationModelMove)
+                responses = assoc.send_c_move(move_dataset, backup_destination_aet, StudyRootQueryRetrieveInformationModelMove)
                 for (status, identifier) in responses: 
                     if status is None:
                         logger.error("C-MOVE failed: Connection timed out, aborted or received invalid response from ARIA.")
-                        # No identifier means no further info from this response
                         break 
                     if status.Status == 0xFF00 or status.Status == 0xFF01: # Pending
-                        logger.info(f"C-MOVE pending: {status.NumberOfRemainingSuboperations} remaining, "
+                        logger.info(f"C-MOVE pending to {backup_destination_aet}: {status.NumberOfRemainingSuboperations} remaining, "
                                     f"{status.NumberOfCompletedSuboperations} completed, "
                                     f"{status.NumberOfWarningSuboperations} warnings, "
                                     f"{status.NumberOfFailedSuboperations} failures.")
                     elif status.Status == 0x0000: # Success
-                        logger.info("C-MOVE operation completed successfully from ARIA's perspective.")
+                        logger.info(f"C-MOVE operation to {backup_destination_aet} completed successfully from ARIA's perspective.")
                         logger.info(f"C-MOVE final status: {status.NumberOfCompletedSuboperations} completed, "
                                     f"{status.NumberOfWarningSuboperations} warnings, "
                                     f"{status.NumberOfFailedSuboperations} failures.")
-                        break # Success means the operation is complete
+                        if status.NumberOfFailedSuboperations > 0 or status.NumberOfWarningSuboperations > 0:
+                            logger.warning(f"C-MOVE to {backup_destination_aet} completed with failures/warnings. Check peer logs.")
+                            # Still considered success by the protocol if status is 0x0000
+                        success_flag = True
+                        break 
                     else: # Failure or other status
-                        error_message = f"C-MOVE operation failed. Status: 0x{status.Status:04X}"
+                        error_message = f"C-MOVE operation to {backup_destination_aet} failed. Status: 0x{status.Status:04X}"
                         if hasattr(status, 'ErrorComment') and status.ErrorComment:
                             error_message += f" Error Comment: {status.ErrorComment}"
                         logger.error(error_message)
-                        # Log affected SOP Instance UID if available in the identifier
-                        if identifier and hasattr(identifier, 'AffectedSOPInstanceUID'):
-                            logger.error(f"Affected SOP Instance UID: {identifier.AffectedSOPInstanceUID}")
-                        break # Operation terminated due to failure
+                        if identifier and hasattr(identifier, 'AffectedSOPInstanceUID'): # Unlikely for top-level failure
+                            logger.error(f"Affected SOP Instance UID (if any): {identifier.AffectedSOPInstanceUID}")
+                        if hasattr(status, 'FailedSOPInstanceUIDList') and status.FailedSOPInstanceUIDList:
+                             logger.error(f"Failed SOP Instance UID List: {status.FailedSOPInstanceUIDList}")
+                        success_flag = False
+                        break 
             except Exception as e:
-                logger.error(f"Exception during C-MOVE operation: {e}", exc_info=True)
+                logger.error(f"Exception during C-MOVE operation to {backup_destination_aet}: {e}", exc_info=True)
+                success_flag = False # Ensure failure on exception
             finally:
                 logger.debug("Releasing C-MOVE association with ARIA.")
                 assoc.release()
         else:
             logger.error(f"C-MOVE Association rejected, aborted or never connected to ARIA SCP: {qr_scp['AETitle']}.")
+            success_flag = False
         
-        logger.debug("Shutting down temporary C-STORE SCP.")
-        scp_server.shutdown()
-        logger.info("Temporary C-STORE SCP shut down.")
+        # No local SCP server to shut down
+        if success_flag:
+            logger.info(f"C-MOVE to {backup_destination_aet} reported overall success.")
+        else:
+            logger.error(f"C-MOVE to {backup_destination_aet} reported overall failure or was not established.")
+        return success_flag

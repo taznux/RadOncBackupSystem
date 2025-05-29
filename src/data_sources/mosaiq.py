@@ -604,10 +604,11 @@ class Mosaiq(DataSource):
 
         return self.generate_rt_records_for_sites(site_df, db_config)
 
-    def transfer(self, rt_record: Dataset, store_scp: Dict[str, Any]):
+    def transfer(self, rt_record: Dataset, store_scp: Dict[str, Any]) -> bool:
         if not isinstance(rt_record, Dataset):
             logger.error("Invalid rt_record type. Must be a pydicom Dataset.")
-            raise TypeError("rt_record must be a pydicom Dataset object")
+            # raise TypeError("rt_record must be a pydicom Dataset object") # Keep original exception type for now
+            return False
 
         logger.info(
             f"Preparing to transfer RT Record SOPInstanceUID "
@@ -617,6 +618,8 @@ class Mosaiq(DataSource):
         self._prepare_rt_record_for_transfer(rt_record)
 
         ae = AE()
+        # Ensure a default AET for the AE SCU if not specified elsewhere, or use a passed in calling_aet
+        # For now, pynetdicom will generate one if ae_title is not set on AE()
         transfer_syntax = getattr(rt_record.file_meta, 'TransferSyntaxUID', ExplicitVRLittleEndian)
         ae.add_requested_context(rt_record.SOPClassUID, transfer_syntax)
 
@@ -625,38 +628,47 @@ class Mosaiq(DataSource):
             f"at {store_scp['IP']}:{store_scp['Port']}"
         )
         assoc = None
+        store_successful = False
         try:
             assoc = ae.associate(store_scp["IP"], store_scp["Port"], ae_title=store_scp["AETitle"])
             if assoc.is_established:
                 logger.info("C-STORE Association established.")
                 if not assoc.accepted_contexts:
                     logger.error(f"No presentation contexts accepted by the SCP for SOP Class {rt_record.SOPClassUID} and syntax {transfer_syntax}.")
+                    # No MosaiqQueryError raised here, will return False
 
                 status = assoc.send_c_store(rt_record)
                 if status:
                     logger.info(f"C-STORE request completed. Status: 0x{status.Status:04X}.")
                     if hasattr(status, "ErrorComment") and status.ErrorComment:
                         logger.warning(f"C-STORE Error Comment: {status.ErrorComment}")
-                    if status.Status != 0x0000:
-                        error_msg = (f"C-STORE operation failed with status 0x{status.Status:04X}. "
-                                     f"SCP Comment: {status.ErrorComment or 'N/A'}")
-                        raise MosaiqQueryError(error_msg)
+                    if status.Status == 0x0000:
+                        store_successful = True
+                    else:
+                        logger.error(f"C-STORE operation failed with status 0x{status.Status:04X}. SCP Comment: {status.ErrorComment or 'N/A'}")
+                        # No MosaiqQueryError raised here, will return False
                 else:
-                    raise MosaiqQueryError("C-STORE request failed: No status returned (connection timed out or aborted).")
+                    logger.error("C-STORE request failed: No status returned (connection timed out or aborted).")
+                    # No MosaiqQueryError raised here, will return False
             else:
                 reason = (assoc.acceptor.primitive.result_str if assoc.acceptor and assoc.acceptor.primitive else "Unknown reason")
-                raise MosaiqQueryError(f"C-STORE Association rejected or aborted: {reason}")
+                logger.error(f"C-STORE Association rejected or aborted: {reason}")
+                # No MosaiqQueryError raised here, will return False
         except Exception as e:
+            # Catching broader exceptions as per original code, but now ensuring False is returned.
             log_msg = f"Exception during C-STORE operation or association: {e}"
             logger.error(log_msg, exc_info=True)
-            if not isinstance(e, MosaiqQueryError):
-                raise MosaiqQueryError(f"C-STORE process failed: {e}") from e
-            else:
-                raise
+            store_successful = False # Ensure failure on any exception
         finally:
             if assoc and assoc.is_established:
                 logger.debug("Releasing C-STORE association.")
                 assoc.release()
+        
+        if store_successful:
+            logger.info(f"C-STORE to {store_scp['AETitle']} for {rt_record.SOPInstanceUID} reported success.")
+        else:
+            logger.error(f"C-STORE to {store_scp['AETitle']} for {rt_record.SOPInstanceUID} reported failure or was not established.")
+        return store_successful
 
     def _prepare_rt_record_for_transfer(self, rt_record: Dataset) -> None:
         if not hasattr(rt_record, 'SOPClassUID') or not rt_record.SOPClassUID:

@@ -49,7 +49,6 @@ class TestARIA(unittest.TestCase):
         self.sample_response_dataset.is_little_endian = True
         self.sample_response_dataset.is_implicit_VR = True
 
-
         # Configure and start mock server
         self.mock_qr_scp_server.add_c_find_response(self.query_dataset, [self.sample_response_dataset])
         self.mock_qr_scp_server.start()
@@ -59,69 +58,46 @@ class TestARIA(unittest.TestCase):
             'IP': mock_qr_host,
             'Port': mock_qr_port
         }
-
-        # Store SCP for transfer test (remains unchanged for now, but could be mocked too)
-        self.store_scp = {
-            'AETitle': 'STORE_SCP', # This would be a real or another mock server for C-STORE
-            'IP': '127.0.0.1',
-            'Port': 11113 # Different port if also mocked locally
-        }
+        # self.store_scp is no longer needed here
+        # self.received_by_internal_scp is no longer needed
 
     def tearDown(self):
         if hasattr(self, 'mock_qr_scp_server') and self.mock_qr_scp_server:
             self.mock_qr_scp_server.stop()
-            self.mock_qr_scp_server.reset() # Good practice
+            self.mock_qr_scp_server.reset() 
 
     def test_query(self):
-        # Test the query method using the mock server
         uids = self.aria.query(self.query_dataset, self.qr_scp)
         self.assertIsInstance(uids, set)
         self.assertEqual(len(uids), 1)
         self.assertIn(self.sample_response_dataset.SOPInstanceUID, uids)
 
-
     def test_transfer(self):
-        # Test the transfer method
-        # This test might need its own mock C-STORE server or adjustments
-        # For now, it's left as is, assuming it might connect to a real/different SCP
-        # or will be updated in a subsequent step.
-        
-        # This handle_store is for the internal C-STORE SCP started by ARIA.transfer
-        def handle_store(event):
-            # This SCP receives files if the C-MOVE SCP (our mock_qr_scp_server)
-            # were to actually send them. In our current mock setup, it does not.
-            if event.dataset: # event.dataset might be None for other C-STORE related events
-                self.received_by_internal_scp.append(event.dataset.SOPInstanceUID)
-            return 0x0000 # Success status for the C-STORE operation
+        mock_backup_destination_aet = "BACKUP_ORTHANC_AET"
+        mock_calling_aet = "TEST_CALLING_AET"
 
-        # self.qr_scp is the C-MOVE SCP (our mock server).
-        # self.store_scp['AETitle'] is the AE Title that ARIA.transfer's internal C-STORE SCP will use.
-        # ARIA.transfer will tell self.qr_scp (the C-MOVE SCP) to send files to self.store_scp['AETitle'].
-        # Our mock_qr_scp_server's handle_move will log this destination AET.
-        
-        # We need to ensure self.move_dataset has the correct attributes for the C-MOVE request.
-        # For example, if QueryRetrieveLevel is 'IMAGE', SOPInstanceUID must be present.
-        # If 'SERIES', SeriesInstanceUID must be present. If 'STUDY', StudyInstanceUID.
-        # The current self.move_dataset is set to 'IMAGE' level with a SOPInstanceUID.
+        # Ensure self.move_dataset has the correct attributes for the C-MOVE request.
+        # Current self.move_dataset is 'IMAGE' level with SOPInstanceUID.
 
+        result = False # Initialize to ensure it's set
         try:
-            self.aria.transfer(
+            result = self.aria.transfer(
                 self.move_dataset, 
                 self.qr_scp, 
-                self.store_scp, # Pass the whole dictionary
-                handle_store
+                mock_backup_destination_aet,
+                mock_calling_aet
             )
         except Exception as e:
             self.fail(f"ARIA.transfer raised an exception: {e}")
 
-        # Assert that no data was actually received by the internal SCP,
-        # because our mock C-MOVE SCP (mock_qr_scp_server) doesn't send C-STORE sub-operations.
-        self.assertEqual(len(self.received_by_internal_scp), 0, 
-                         "Internal SCP should not have received any datasets.")
-
-        # The primary check is that the C-MOVE operation completes successfully at the protocol level,
-        # meaning aria.transfer doesn't hang or error out when communicating with mock_qr_scp_server.
-        # The mock_qr_scp_server's handle_move should have logged the move_destination_aet.
+        self.assertTrue(result, "ARIA.transfer should return True on C-MOVE success.")
+        
+        # Verify that the MockDicomServer (acting as C-MOVE SCP) received the correct move_destination_aet
+        self.assertIsNotNone(self.mock_qr_scp_server.last_move_destination_aet, 
+                             "MockDicomServer should have recorded the move_destination_aet.")
+        self.assertEqual(self.mock_qr_scp_server.last_move_destination_aet, 
+                         mock_backup_destination_aet,
+                         "ARIA.transfer did not send the correct move_destination_aet to the C-MOVE SCP.")
 
 
 if __name__ == '__main__':

@@ -1,13 +1,61 @@
+# src/config/environments.toml
+# This file centralizes all environment-specific configurations,
+# including DICOM AE details for sources and backup targets,
+# Mosaiq database connections, and script-specific settings.
+
 [UCLA]
-source = "ARIA"
-backup = "Orthanc"
+description = "UCLA Testbed Environment"
+default_source = "ARIA"  # Alias for one of the sources defined below
+default_backup = "ORTHANC_MAIN_UCLA" # Alias for one of the backup_targets defined below
 
-# Changed [TJU] to [TJU_Mosaiq] and [TJU_MIM] to handle sources separately
-[TJU_Mosaiq]
-source = "Mosaiq" # Standardized to 'source' key
-mosaiq_odbc_driver = "ODBC Driver 17 for SQL Server"
-backup = "Orthanc"
+[UCLA.script_ae] # Calling AET for scripts when operating in this environment
+aet = "UCLA_BACKUP_SCU"
+# IP and Port for the script's AE are usually not needed for SCU operations,
+# unless it also acts as an SCP (e.g. for C-GET responses if not using default pynetdicom AE).
+# For now, only AETitle is critical for SCU.
 
-[TJU_MIM]
-source = "MIM" # Standardized to 'source' key
-backup = "Orthanc"
+[UCLA.sources]
+# Details for data sources available at UCLA
+ARIA = { aet = "ARIA_UCLA_AE", ip = "192.168.1.100", port = 104, type = "aria" }
+MIM = { aet = "MIM_UCLA_AE", ip = "192.168.1.101", port = 105, type = "mim" }
+Mosaiq = { type = "mosaiq", db_server = "UCLA_MOSAIQ_DB_IP", db_database = "UCLA_MOSAIQ_DB_NAME", db_username = "user_ucla", db_password = "__UCLA_MOSAIQ_DB_PASSWORD__", odbc_driver = "ODBC Driver 17 for SQL Server" }
+# Add other specific source configurations for UCLA if any (e.g. dicom_query_keys, mosaiq_backup_sql_query directly here)
+# Example:
+# ARIA_EXTRA_CONFIG = { dicom_query_level = "SERIES", dicom_query_keys = { PatientID = "*", Modality = "RTDOSE" } }
+
+
+[UCLA.backup_targets]
+# Details for backup destinations available for UCLA
+ORTHANC_MAIN_UCLA = { aet = "ORTHANC_UCLA_BACKUP_AE", ip = "192.168.1.200", port = 4242, type = "orthanc" }
+STAGING_SCP_FOR_MOSAIQ_UCLA = { aet = "UCLA_MOSAIQ_STAGING_AE", ip = "192.168.1.201", port = 11113, type = "dicom_scp" } # Generic DICOM SCP type
+
+# Environment-specific application settings for UCLA (can be expanded)
+[UCLA.settings]
+max_uids_per_run = 100
+# Example: Mosaiq SQL query specific to UCLA if it differs from TJU
+mosaiq_backup_sql_query = "SELECT SpecificUCLAColumn FROM UCLATable WHERE Condition = 'UCLA_Value'"
+
+
+[TJU]
+description = "TJU Testbed Environment"
+default_source = "Mosaiq"
+default_backup = "ORTHANC_MAIN_TJU"
+
+[TJU.script_ae]
+aet = "TJU_BACKUP_SCU"
+
+[TJU.sources]
+ARIA = { aet = "ARIA_TJU_AE", ip = "192.168.2.100", port = 104, type = "aria" }
+MIM = { aet = "MIM_TJU_AE", ip = "192.168.2.101", port = 105, type = "mim" }
+Mosaiq = { type = "mosaiq", db_server = "TJU_MOSAIQ_DB_IP", db_database = "TJU_MOSAIQ_DB_NAME", db_username = "user_tju", db_password = "__TJU_MOSAIQ_DB_PASSWORD__", odbc_driver = "ODBC Driver 17 for SQL Server" }
+
+[TJU.backup_targets]
+ORTHANC_MAIN_TJU = { aet = "ORTHANC_TJU_BACKUP_AE", ip = "192.168.2.200", port = 4242, type = "orthanc" }
+STAGING_SCP_FOR_MOSAIQ_TJU = { aet = "TJU_MOSAIQ_STAGING_AE", ip = "192.168.2.201", port = 11113, type = "dicom_scp" }
+
+[TJU.settings]
+max_uids_per_run = 50 # Different setting for TJU
+# Example: Mosaiq SQL query specific to TJU
+mosaiq_backup_sql_query = "SELECT SpecificTJUColumn FROM TJUTable WHERE Condition = 'TJU_Value'"
+# Example: ARIA query keys for TJU if different
+# ARIA_EXTRA_CONFIG = { dicom_query_level = "STUDY", dicom_query_keys = { PatientID = "TJU*", Modality = "RTPLAN" } }

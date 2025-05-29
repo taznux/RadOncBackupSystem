@@ -1,34 +1,20 @@
-[local]
-AETitle = ""
-IP = ""
-Port = 11112
+# src/config/dicom.toml
+#
+# This file is largely deprecated. All environment-specific DICOM AE details,
+# Mosaiq database configurations, and backup target configurations have been
+# moved into `environments.toml` under their respective environment sections
+# (e.g., [UCLA.sources.ARIA], [TJU.backup_targets.ORTHANC_MAIN_TJU]).
+#
+# The calling AETitle for the backup scripts themselves (`backup_script_ae`)
+# is also defined within each environment in `environments.toml`
+# (e.g., [UCLA.script_ae], [TJU.script_ae]).
+#
+# Please refer to `environments.toml` for all operational configurations.
+# This file is kept for now to avoid import errors in scripts that might still
+# try to load it, but it should not be used for new configurations.
+# It will be removed in a future update once all scripts are confirmed to
+# exclusively use environments.toml.
 
-[rvs]
-AETitle = ""
-IP = ""
-Port = 11112
-
-[mim_server]
-AETitle = ""
-IP = ""
-Port = 11112
-
-[mim_server_qr]
-AETitle = ""
-IP = ""
-Port = 11112
-
-[aria]
-AETitle = ""
-IP = ""
-Port = 11112
-
-[mosaiq]
-AETitle = ""
-IP = ""
-Port = 11112
-
-[orthanc]
-AETitle = ""
-IP = ""
-Port = 11112
+# Example of a truly global setting (if any were needed):
+# [global_settings]
+# default_timeout = 30

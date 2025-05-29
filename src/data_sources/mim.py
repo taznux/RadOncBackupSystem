@@ -1,7 +1,7 @@
 from . import DataSource
 from pydicom.dataset import Dataset
-from pynetdicom import AE, evt, StoragePresentationContexts, ALL_TRANSFER_SYNTAXES
-from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelGet
+from pynetdicom import AE, evt # evt might not be needed if local SCP is gone
+from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove
 import logging
 
 logger = logging.getLogger(__name__)
@@ -11,7 +11,7 @@ class MIM(DataSource):
     Represents the MIM data source system.
 
     This class provides methods to query and transfer data from a MIM DICOM node
-    using C-FIND and C-GET operations.
+    using C-FIND and C-MOVE operations.
     """
     def __init__(self):
         """
@@ -53,7 +53,7 @@ class MIM(DataSource):
                         else:
                             logger.debug("C-FIND Pending status with no valid identifier.")
                     elif status and status.Status == 0x0000: # Success
-                        if identifier and hasattr(identifier, 'SOPInstanceUID'):
+                        if identifier and hasattr(identifier, 'SOPInstanceUID'): # Should ideally be no identifier for final success
                             logger.debug(f"C-FIND Success: Found SOPInstanceUID {identifier.SOPInstanceUID}")
                             uids.add(identifier.SOPInstanceUID)
                         logger.info("C-FIND operation completed successfully.")
@@ -77,84 +77,77 @@ class MIM(DataSource):
         logger.info(f"C-FIND query to MIM found {len(uids)} SOPInstanceUIDs.")
         return uids
 
-    def transfer(self, get_dataset: Dataset, qr_scp: dict, local_store_config: dict, c_store_handler: callable):
+    def transfer(self, move_dataset: Dataset, qr_scp: dict, backup_destination_aet: str, calling_aet: str) -> bool:
         """
-        Performs a C-GET operation to retrieve data from MIM and store it locally.
+        Performs a C-MOVE operation to transfer data from MIM directly to a specified backup destination AET.
 
-        This method initiates a C-GET request to the MIM QR SCP. The MIM SCP will then
-        initiate C-STORE sub-operations to this application. This method starts a temporary
-        local C-STORE SCP to receive these instances.
-
-        :param get_dataset: A pydicom Dataset object specifying what to retrieve.
-                            Must include QueryRetrieveLevel and unique keys for that level
-                            (e.g., StudyInstanceUID, SeriesInstanceUID, SOPInstanceUID).
-        :type get_dataset: pydicom.dataset.Dataset
-        :param qr_scp: A dictionary containing the MIM Query/Retrieve SCP details:
-                       {'IP': 'host_ip', 'Port': port_number, 'AETitle': 'AE_TITLE'}.
+        :param move_dataset: A pydicom Dataset containing parameters for the C-MOVE request
+                             (e.g., PatientID, StudyInstanceUID, SeriesInstanceUID).
+                             QueryRetrieveLevel must be set.
+        :type move_dataset: pydicom.dataset.Dataset
+        :param qr_scp: Dictionary with MIM QR SCP details: {'IP', 'Port', 'AETitle'}.
         :type qr_scp: dict
-        :param local_store_config: A dictionary for the local C-STORE SCP configuration:
-                                   {'IP': 'local_ip', 'Port': local_port_number, 'AETitle': 'local_aet'}.
-                                   The 'AETitle' is used for the SCP AE.
-        :type local_store_config: dict
-        :param c_store_handler: The event handler function (e.g., for `evt.EVT_C_STORE`)
-                                to be used by the local C-STORE SCP. This handler will
-                                process each DICOM instance received.
-        :type c_store_handler: callable
-        :raises Exception: Can raise various exceptions related to network issues or DICOM protocol errors.
+        :param backup_destination_aet: The AE Title of the final backup destination (e.g., Orthanc).
+        :type backup_destination_aet: str
+        :param calling_aet: The AE Title of this application initiating the C-MOVE.
+        :type calling_aet: str
+        :return: True if the C-MOVE operation reported success (0x0000), False otherwise.
+        :rtype: bool
+        :raises Exception: Can raise exceptions for network or DICOM protocol errors if not handled by pynetdicom.
         """
-        # The AE for this operation acts as both C-GET SCU and C-STORE SCP.
-        # The AETitle in local_store_config is for our SCP part.
-        ae = AE(ae_title=local_store_config['AETitle'])
-        ae.add_requested_context(StudyRootQueryRetrieveInformationModelGet)
         
-        # Configure SCP part: contexts it supports for incoming C-STOREs
-        for context in StoragePresentationContexts: # Support all standard storage SOP classes
-            ae.add_supported_context(context.abstract_syntax, ALL_TRANSFER_SYNTAXES) # And all transfer syntaxes
+        ae = AE(ae_title=calling_aet)
+        ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
         
-        handlers = [(evt.EVT_C_STORE, c_store_handler)]
-        
-        logger.info(f"Starting temporary C-STORE SCP on {local_store_config['IP']}:{local_store_config['Port']} "
-                    f"with AET {ae.ae_title} for C-GET operation.")
-        scp_server = ae.start_server((local_store_config['IP'], local_store_config['Port']),
-                                     block=False, evt_handlers=handlers)
+        success_flag = False
 
-        logger.info(f"Attempting C-GET association to MIM QR SCP: {qr_scp['AETitle']} at {qr_scp['IP']}:{qr_scp['Port']}")
+        logger.info(f"Attempting C-MOVE association to MIM QR SCP: {qr_scp['AETitle']} "
+                    f"at {qr_scp['IP']}:{qr_scp['Port']} from AET {calling_aet}.")
         assoc = ae.associate(qr_scp['IP'], qr_scp['Port'], ae_title=qr_scp['AETitle'])
         
         if assoc.is_established:
-            logger.info(f"C-GET Association established with MIM. Sending C-GET request.")
+            logger.info(f"C-MOVE Association established with MIM. Sending C-MOVE request for destination AET: {backup_destination_aet}.")
             try:
-                # C-GET SCU tells the SCP to send instances back to us (our AE).
-                # The SCP will use the AE Title from the C-GET association request.
-                responses = assoc.send_c_get(get_dataset, StudyRootQueryRetrieveInformationModelGet)
-                for (status, _) in responses: # Identifier is typically None for C-GET responses from SCU perspective
+                responses = assoc.send_c_move(move_dataset, backup_destination_aet, StudyRootQueryRetrieveInformationModelMove)
+                for (status, identifier) in responses: 
                     if status is None:
-                        logger.error("C-GET failed: Connection timed out, aborted or received invalid response from MIM.")
-                        break
+                        logger.error("C-MOVE failed: Connection timed out, aborted or received invalid response from MIM.")
+                        break 
                     if status.Status == 0xFF00 or status.Status == 0xFF01: # Pending
-                        logger.info(f"C-GET pending: {status.NumberOfRemainingSuboperations} remaining, "
+                        logger.info(f"C-MOVE pending to {backup_destination_aet}: {status.NumberOfRemainingSuboperations} remaining, "
                                     f"{status.NumberOfCompletedSuboperations} completed, "
                                     f"{status.NumberOfWarningSuboperations} warnings, "
                                     f"{status.NumberOfFailedSuboperations} failures.")
                     elif status.Status == 0x0000: # Success
-                        logger.info("C-GET operation completed successfully.")
-                        logger.info(f"C-GET final status: {status.NumberOfCompletedSuboperations} completed, "
+                        logger.info(f"C-MOVE operation to {backup_destination_aet} completed successfully from MIM's perspective.")
+                        logger.info(f"C-MOVE final status: {status.NumberOfCompletedSuboperations} completed, "
                                     f"{status.NumberOfWarningSuboperations} warnings, "
                                     f"{status.NumberOfFailedSuboperations} failures.")
-                        break
-                    else: # Failure
-                        logger.error(f"C-GET operation failed. Status: 0x{status.Status:04X}")
+                        if status.NumberOfFailedSuboperations > 0 or status.NumberOfWarningSuboperations > 0:
+                            logger.warning(f"C-MOVE to {backup_destination_aet} completed with failures/warnings. Check peer logs.")
+                        success_flag = True
+                        break 
+                    else: # Failure or other status
+                        error_message = f"C-MOVE operation to {backup_destination_aet} failed. Status: 0x{status.Status:04X}"
                         if hasattr(status, 'ErrorComment') and status.ErrorComment:
-                            logger.error(f"Error Comment: {status.ErrorComment}")
-                        break
+                            error_message += f" Error Comment: {status.ErrorComment}"
+                        logger.error(error_message)
+                        if hasattr(status, 'FailedSOPInstanceUIDList') and status.FailedSOPInstanceUIDList:
+                             logger.error(f"Failed SOP Instance UID List: {status.FailedSOPInstanceUIDList}")
+                        success_flag = False
+                        break 
             except Exception as e:
-                logger.error(f"Exception during C-GET operation: {e}", exc_info=True)
+                logger.error(f"Exception during C-MOVE operation to {backup_destination_aet}: {e}", exc_info=True)
+                success_flag = False
             finally:
-                logger.debug("Releasing C-GET association with MIM.")
+                logger.debug("Releasing C-MOVE association with MIM.")
                 assoc.release()
         else:
-            logger.error(f"C-GET Association rejected, aborted or never connected to MIM SCP: {qr_scp['AETitle']}.")
+            logger.error(f"C-MOVE Association rejected, aborted or never connected to MIM SCP: {qr_scp['AETitle']}.")
+            success_flag = False
         
-        logger.debug("Shutting down temporary C-STORE SCP for C-GET.")
-        scp_server.shutdown()
-        logger.info("Temporary C-STORE SCP for C-GET shut down.")
+        if success_flag:
+            logger.info(f"C-MOVE to {backup_destination_aet} reported overall success.")
+        else:
+            logger.error(f"C-MOVE to {backup_destination_aet} reported overall failure or was not established.")
+        return success_flag

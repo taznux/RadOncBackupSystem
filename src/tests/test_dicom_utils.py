@@ -17,41 +17,51 @@ from pynetdicom.sop_class import (
     StudyRootQueryRetrieveInformationModelFind,
     PatientRootQueryRetrieveInformationModelMove,
     StudyRootQueryRetrieveInformationModelMove,
-    RTPlanStorage,  # Example for _get_storage_contexts
+    PatientRootQueryRetrieveInformationModelGet, # Added for C-GET
+    StudyRootQueryRetrieveInformationModelGet,   # Added for C-GET
+    CompositeInstanceRootRetrieveGet,            # Added for C-GET
+    StoragePresentationContexts,                 # Added for C-GET (used by _handle_get_scu)
+    RTPlanStorage, 
 )
 from pynetdicom.status import (
     Status as PynetdicomStatus,
-)  # To avoid conflict with local Status
+) 
 
 # Import the main function and helpers from the script to be tested
 from src.cli.dicom_utils import (
     main as dicom_utils_main,
-    _handle_echo_scu,  # Testing main handlers that call helpers
+    _handle_echo_scu, 
     _handle_find_scu,
     _handle_move_scu,
     _handle_store_scu,
-    _on_find_response,  # Response handlers are now directly testable
+    _handle_get_scu, # Added for C-GET
+    _on_find_response, 
     _on_move_response,
     _on_store_response,
-    _establish_association,  # Test helper functions directly
+    _on_get_response, # Added for C-GET
+    _establish_association, 
     _build_find_query_dataset,
     _get_find_model,
     _build_move_identifier_dataset,
     _get_move_model,
+    _build_get_identifier_dataset, # Added for C-GET
+    _get_get_model,                # Added for C-GET
     _get_dicom_files_from_path,
     _get_storage_contexts,
-    DicomConnectionError,  # Custom exceptions
+    DicomConnectionError, 
     DicomOperationError,
     InvalidInputError,
-    # DicomUtilsError, # Base class, not directly asserted in these tests
 )
-from pynetdicom import evt  # For event objects
+from pynetdicom import evt 
+import tempfile # Added for C-GET tests
 
 
 # Patching strategy:
 # - For CLI tests (calling dicom_utils_main): patch helpers like _establish_association
 # - For direct tests of SCU handlers (_handle_echo_scu, etc.): patch _establish_association
 # - For direct tests of helper functions: patch underlying pynetdicom.AE or os functions
+
+# --- Test Cases for C-ECHO ---
 @patch("src.cli.dicom_utils._establish_association")
 class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
     def setUp(self):
@@ -63,7 +73,7 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
             verbose=False,
         )
         self.mock_stdout = patch("sys.stdout", new_callable=StringIO).start()
-        self.addCleanup(patch.stopall) # Replaces self.tearDown for stopping patches
+        self.addCleanup(patch.stopall) 
 
     def test_handle_echo_scu_success(self, mock_establish_association):
         mock_assoc = MagicMock(spec=Association)
@@ -80,6 +90,7 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
             self.args.host,
             self.args.port,
             [VerificationSOPClass],
+            None # event_handlers
         )
         mock_assoc.send_c_echo.assert_called_once()
         mock_assoc.release.assert_called_once()
@@ -90,16 +101,14 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
             "Connection failed"
         )
 
-        with self.assertRaises(DicomConnectionError): # Expect error to be re-raised
+        with self.assertRaises(DicomConnectionError): 
             _handle_echo_scu(self.args)
         
         self.assertIn(
             "C-ECHO operation failed: Connection failed", self.mock_stdout.getvalue()
         )
         mock_establish_association.assert_called_once()
-        # Ensure send_c_echo is not called if association failed before that
-        # Accessing return_value of a mock that raised an exception needs careful handling
-        if mock_establish_association.return_value.is_established: # Should not be true
+        if mock_establish_association.return_value.is_established: 
              mock_establish_association.return_value.send_c_echo.assert_not_called()
 
 
@@ -107,7 +116,7 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
         mock_assoc = MagicMock(spec=Association)
         mock_assoc.send_c_echo.return_value = MagicMock(
             Status=0x0122
-        )  # e.g. SOP Class Not Supported
+        ) 
         mock_establish_association.return_value = mock_assoc
 
         with self.assertRaises(DicomOperationError):
@@ -120,7 +129,7 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
 
     def test_handle_echo_scu_no_response(self, mock_establish_association):
         mock_assoc = MagicMock(spec=Association)
-        mock_assoc.send_c_echo.return_value = None  # No status object returned
+        mock_assoc.send_c_echo.return_value = None 
         mock_establish_association.return_value = mock_assoc
 
         with self.assertRaises(DicomOperationError):
@@ -131,7 +140,7 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
         )
         mock_assoc.release.assert_called_once()
 
-
+# --- Test Cases for C-FIND ---
 @patch("src.cli.dicom_utils._establish_association")
 class TestDicomUtilsFindSCUHandler(unittest.TestCase):
     def setUp(self):

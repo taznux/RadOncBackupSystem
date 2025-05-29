@@ -1,0 +1,40 @@
+name: CI - Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Run unit tests
+      run: python -m unittest discover -s src/tests -p 'test_*.py'
+      # If tests have trouble finding modules in 'src', you might need to set PYTHONPATH.
+      # Example:
+      # env:
+      #   PYTHONPATH: ${{ github.workspace }}
+      # Or, if your 'src' directory is directly under the workspace root:
+      # env:
+      #   PYTHONPATH: ${{ github.workspace }}/src
+      # However, 'python -m unittest discover -s src/tests' from the root should generally work
+      # if your tests correctly import modules (e.g., 'from src.module import ...' or relative imports if structured so).
+      # The current project structure with tests in 'src/tests' and imports like 
+      # 'from src.data_sources.aria import ARIA' might require PYTHONPATH to be set to the root.
+      # For example, if running tests from the root:
+      # env:
+      #   PYTHONPATH: .
