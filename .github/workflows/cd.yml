@@ -1,0 +1,106 @@
+name: CD - Deploy Application
+
+on:
+  push:
+    branches: [ main ]
+  # In a full setup, this might be triggered by:
+  # workflow_run:
+  #   workflows: ["CI - Build and Test"]
+  #   types:
+  #     - completed
+  #   branches: [main]
+  # And then a condition on the job: if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    environment: 
+      name: staging
+      url: http://staging.dicom.clinic.com # Placeholder URL
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Build Package/Container (Placeholder)
+      run: |
+        echo "Building package/container for staging..."
+        # In a real scenario, this would involve creating a distributable package 
+        # (e.g., wheel, tarball) or building a Docker container.
+
+    - name: Deploy to Staging (Placeholder)
+      env:
+        STAGING_HOST: ${{ secrets.STAGING_HOST }} # Example of using a secret
+      run: |
+        echo "Deploying to staging environment..."
+        echo "  Target: $STAGING_HOST"
+        # Actual deployment steps depend on infrastructure 
+        # (e.g., scp files, kubectl apply, docker push/run, Ansible playbook).
+
+    - name: Post-Deployment Verification (Staging - Placeholder)
+      env:
+        PYTHONPATH: . # Assuming src is at the root for module resolution
+        STAGING_ORTHANC_HOST: ${{ secrets.STAGING_ORTHANC_HOST }}
+        STAGING_ORTHANC_PORT: ${{ secrets.STAGING_ORTHANC_PORT }}
+      run: |
+        echo "Verifying staging deployment..."
+        # This step should run actual health checks or basic functionality tests 
+        # against the staging environment.
+        # The AET 'BACKUP_SCU' should match the calling AET for the backup script.
+        # The target AET 'ORTHANC_PROD_STAGE_MOSAIQ' is the expected AET for the staging Orthanc.
+        python src/cli/dicom_utils.py echo --aet BACKUP_SCU --aec ORTHANC_PROD_STAGE_MOSAIQ --host "$STAGING_ORTHANC_HOST" --port "$STAGING_ORTHANC_PORT"
+
+  deploy-production:
+    needs: deploy-staging # Only run if staging deployment was successful
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: http://prod.dicom.clinic.com # Placeholder URL
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Build Package/Container (Placeholder)
+      run: |
+        echo "Building package/container for production..."
+        # In a real scenario, this might use artifacts from the staging build 
+        # or rebuild for production.
+
+    - name: Deploy to Production (Placeholder)
+      env:
+        PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+      run: |
+        echo "Deploying to production environment..."
+        echo "  Target: $PRODUCTION_HOST"
+        # Actual deployment steps depend on infrastructure.
+        # This step might require manual approval if configured in GitHub Environments.
+
+    - name: Post-Deployment Verification (Production - Placeholder)
+      env:
+        PYTHONPATH: . # Assuming src is at the root for module resolution
+        PRODUCTION_ORTHANC_HOST: ${{ secrets.PRODUCTION_ORTHANC_HOST }}
+        PRODUCTION_ORTHANC_PORT: ${{ secrets.PRODUCTION_ORTHANC_PORT }}
+      run: |
+        echo "Verifying production deployment..."
+        # This step should run actual health checks or basic functionality tests 
+        # against the production environment.
+        # The AET 'BACKUP_SCU' should match the calling AET for the backup script.
+        # The target AET 'ORTHANC_PROD_MAIN' is the expected AET for the main production Orthanc.
+        python src/cli/dicom_utils.py echo --aet BACKUP_SCU --aec ORTHANC_PROD_MAIN --host "$PRODUCTION_ORTHANC_HOST" --port "$PRODUCTION_ORTHANC_PORT"

@@ -2,13 +2,14 @@
 Treatment Report Generation CLI.
 
 This script provides a command-line interface to generate a treatment summary report
-from a Mosaiq data source. It uses environment configurations to determine
-the target Mosaiq database details.
+from a Mosaiq data source. It uses environment configurations from `environments.toml` 
+to determine the target Mosaiq database details.
 """
 import argparse
 import tomllib # Python 3.11+
 import logging
 import sys
+import os # Added
 from typing import Dict, Any, List, Optional
 
 # Assuming src is in PYTHONPATH or handled by test runner
@@ -17,6 +18,10 @@ from src.data_sources.mosaiq import Mosaiq, MosaiqQueryError
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
+
+# Define path to environments.toml
+CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
+ENVIRONMENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "environments.toml")
 
 
 class ReportCliError(Exception):
@@ -27,32 +32,7 @@ class ConfigError(ReportCliError):
     """Raised for configuration-related errors."""
 
 
-def load_toml_config(config_file_path: str) -> Dict[str, Any]:
-    """
-    Loads a TOML configuration file.
-
-    Args:
-        config_file_path: Path to the TOML configuration file.
-
-    Returns:
-        A dictionary representing the loaded TOML configuration.
-
-    Raises:
-        ConfigError: If the file is not found or is not valid TOML.
-    """
-    logger.info(f"Loading configuration from: {config_file_path}")
-    try:
-        with open(config_file_path, "rb") as f_binary:
-            return tomllib.load(f_binary)
-    except FileNotFoundError:
-        msg = f"Configuration file not found: {config_file_path}"
-        logger.error(msg)
-        raise ConfigError(msg) from None
-    except tomllib.TOMLDecodeError as e:
-        msg = f"Error decoding TOML file {config_file_path}: {e}"
-        logger.error(msg)
-        raise ConfigError(msg) from e
-
+# load_toml_config function removed as it's only used once directly in main.
 
 def _print_report_to_console(
     report_data: List[Dict[str, Any]],
@@ -125,25 +105,17 @@ def _print_report_to_console(
 def _create_argument_parser() -> argparse.ArgumentParser:
     """Creates and configures the argument parser for the CLI."""
     parser = argparse.ArgumentParser(
-        description="Generate a treatment summary report from Mosaiq."
+        description="Generate a treatment summary report from a Mosaiq data source configured in environments.toml."
     )
     parser.add_argument(
-        "--environments_config",
-        required=True,
-        help="Path to the environments configuration file (e.g., environments.toml).",
+        "environment_name",
+        help="Name of the environment to use (defined in environments.toml). This environment must contain a Mosaiq source.",
     )
     parser.add_argument(
-        "--dicom_config",
-        required=True,
-        help=(
-            "Path to the DICOM/Database configuration file (e.g., dicom.toml). "
-            "This file should contain Mosaiq DB connection details."
-        ),
-    )
-    parser.add_argument(
-        "--environment",
-        required=True,
-        help="Name of the Mosaiq environment to use (e.g., TJU_MOSAIQ).",
+        "mosaiq_source_alias",
+        nargs='?',
+        default=None,
+        help="Alias of the Mosaiq source to use (from environment's [sources]). If not provided, uses default_source or the first available Mosaiq source in the environment."
     )
     parser.add_argument(
         "--mrn", required=True, help="Medical Record Number for the report."
@@ -183,49 +155,66 @@ def main():
     # Ensure our specific logger also adheres to this level
     logger.setLevel(log_level)
 
-
     try:
-        environments = load_toml_config(args.environments_config)
-        db_configs_all = load_toml_config(args.dicom_config)
+        try:
+            with open(ENVIRONMENTS_CONFIG_PATH, "rb") as f_binary:
+                loaded_environments = tomllib.load(f_binary)
+        except FileNotFoundError:
+            raise ConfigError(f"Environments configuration file not found: {ENVIRONMENTS_CONFIG_PATH}") from None
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"Error decoding TOML file {ENVIRONMENTS_CONFIG_PATH}: {e}") from e
 
-        if args.environment not in environments:
-            raise ConfigError(
-                f"Environment '{args.environment}' not found in {args.environments_config}."
-            )
-        env_config = environments[args.environment]
+        env_block = loaded_environments.get(args.environment_name)
+        if not env_block:
+            raise ConfigError(f"Environment '{args.environment_name}' not found in {ENVIRONMENTS_CONFIG_PATH}.")
 
-        data_source_name = env_config.get("source") or env_config.get("source1")
-        if not data_source_name or data_source_name.lower() != "mosaiq":
-            raise ConfigError(
-                f"Environment '{args.environment}' must specify 'Mosaiq' as its source type. "
-                f"Found: {data_source_name or 'None'}."
-            )
+        actual_mosaiq_alias = args.mosaiq_source_alias
+        if not actual_mosaiq_alias:
+            actual_mosaiq_alias = env_block.get('default_source')
+            if actual_mosaiq_alias:
+                # Check if the default source is actually Mosaiq
+                default_source_config = env_block.get('sources', {}).get(actual_mosaiq_alias, {})
+                if default_source_config.get('type') != 'mosaiq':
+                    logger.info(f"Default source '{actual_mosaiq_alias}' is not of type 'mosaiq'. Searching for a Mosaiq source.")
+                    actual_mosaiq_alias = None # Clear to trigger search
+        
+        if not actual_mosaiq_alias: # If still no alias (not provided, or default wasn't Mosaiq)
+            found_mosaiq = False
+            for alias, config in env_block.get('sources', {}).items():
+                if config.get('type') == 'mosaiq':
+                    actual_mosaiq_alias = alias
+                    found_mosaiq = True
+                    logger.info(f"Using first available Mosaiq source found: '{actual_mosaiq_alias}'")
+                    break
+            if not found_mosaiq:
+                raise ConfigError(f"No suitable Mosaiq source found in environment '{args.environment_name}'. Please specify one or ensure 'default_source' points to a Mosaiq type source.")
+
+        all_sources_config = env_block.get('sources', {})
+        mosaiq_db_config = all_sources_config.get(actual_mosaiq_alias)
+        
+        if not mosaiq_db_config:
+            raise ConfigError(f"Configuration for Mosaiq source alias '{actual_mosaiq_alias}' not found in environment '{args.environment_name}'.")
+        
+        if mosaiq_db_config.get('type') != 'mosaiq':
+            raise ConfigError(f"Selected source '{actual_mosaiq_alias}' is not of type 'mosaiq'. This script only supports Mosaiq sources.")
 
         logger.info(
-            f"Selected environment: {args.environment}, Data source: {data_source_name}"
+            f"Selected environment: {args.environment_name}, Mosaiq Source Alias: {actual_mosaiq_alias}"
         )
 
-        if data_source_name not in db_configs_all:
-            raise ConfigError(
-                f"Database configuration for source '{data_source_name}' not found in {args.dicom_config}."
+        odbc_driver = mosaiq_db_config.get("odbc_driver")
+        if not odbc_driver:
+            logger.info( 
+                f"ODBC driver not specified for Mosaiq source '{actual_mosaiq_alias}'. Using Mosaiq class default."
             )
-        db_connection_details = db_configs_all[data_source_name]
-
-        odbc_driver = env_config.get(
-            "mosaiq_odbc_driver"
-        ) or db_connection_details.get("odbc_driver")
-        if not odbc_driver: # odbc_driver can be None if relying on Mosaiq class default
-            logger.info( # Changed from warning to info as it's an expected fallback
-                f"ODBC driver not specified for Mosaiq in environment '{args.environment}' "
-                "or in DB config. Using Mosaiq class default."
-            )
-
+        
+        # The mosaiq_db_config dictionary itself contains db_server, db_database etc.
         mosaiq_source = Mosaiq(odbc_driver=odbc_driver)
 
         logger.info(f"Generating treatment summary report for MRN: {args.mrn}")
         report_data = mosaiq_source.get_treatment_summary_report(
             patient_mrn=args.mrn,
-            db_config=db_connection_details,
+            db_config=mosaiq_db_config, # Pass the whole config dict for the source
             start_date=args.start_date,
             end_date=args.end_date,
         )
@@ -236,7 +225,7 @@ def main():
         logger.info(
             f"Successfully generated and displayed report for MRN: {args.mrn}"
         )
-        sys.exit(0) # Explicit success exit
+        sys.exit(0)
 
     except (ConfigError, MosaiqQueryError, ValueError) as e:
         logger.error(f"Report generation failed: {e}", exc_info=args.verbose)

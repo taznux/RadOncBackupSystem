@@ -46,8 +46,9 @@ class TestMosaiqGetTreatmentSummaryReport(unittest.TestCase):
             dict(zip(self.expected_columns, sample_rows[1])),
         ]
 
+        # _build_treatment_summary_sql parameters changed: now takes list of params
         with patch.object(
-            self.mosaiq, "_build_treatment_summary_sql", return_value="DUMMY SQL"
+            self.mosaiq, "_build_treatment_summary_sql", return_value=("DUMMY SQL", ["MRN001"])
         ) as mock_build_sql:
             report = self.mosaiq.get_treatment_summary_report(
                 "MRN001", self.db_config
@@ -55,7 +56,7 @@ class TestMosaiqGetTreatmentSummaryReport(unittest.TestCase):
 
         self.assertEqual(report, expected_report)
         mock_build_sql.assert_called_once_with("MRN001", None, None)
-        mock_query.assert_called_once_with("DUMMY SQL", self.db_config)
+        mock_query.assert_called_once_with("DUMMY SQL", self.db_config, params=["MRN001"])
 
     @patch("src.data_sources.mosaiq.Mosaiq.query")
     def test_get_report_success_no_data(self, mock_query):
@@ -63,47 +64,51 @@ class TestMosaiqGetTreatmentSummaryReport(unittest.TestCase):
         mock_query.return_value = []
 
         with patch.object(
-            self.mosaiq, "_build_treatment_summary_sql", return_value="DUMMY SQL"
+            self.mosaiq, "_build_treatment_summary_sql", return_value=("DUMMY SQL", ["MRN003"])
         ):
             report = self.mosaiq.get_treatment_summary_report(
                 "MRN003", self.db_config
             )
 
         self.assertEqual(report, [])
-        mock_query.assert_called_once_with("DUMMY SQL", self.db_config)
+        mock_query.assert_called_once_with("DUMMY SQL", self.db_config, params=["MRN003"])
 
     @patch("src.data_sources.mosaiq.Mosaiq.query")
     def test_get_report_with_start_and_end_dates_sql_build(self, mock_query):
         """Test that _build_treatment_summary_sql is called with correct dates."""
         mock_query.return_value = []
-
+        expected_params = ["MRN004", "2023-01-01", "2023-12-31"]
         with patch.object(
-            self.mosaiq, "_build_treatment_summary_sql", return_value="DUMMY SQL DATES"
+            self.mosaiq, "_build_treatment_summary_sql", return_value=("DUMMY SQL DATES", expected_params)
         ) as mock_build_sql:
             self.mosaiq.get_treatment_summary_report(
                 "MRN004", self.db_config, start_date="2023-01-01", end_date="2023-12-31"
             )
 
         mock_build_sql.assert_called_once_with("MRN004", "2023-01-01", "2023-12-31")
-        mock_query.assert_called_once_with("DUMMY SQL DATES", self.db_config)
+        mock_query.assert_called_once_with("DUMMY SQL DATES", self.db_config, params=expected_params)
 
     def test_build_treatment_summary_sql_logic(self):
         """Test the internal _build_treatment_summary_sql method directly."""
-        sql_mrn_only = self.mosaiq._build_treatment_summary_sql(
+        sql_mrn_only, params_mrn_only = self.mosaiq._build_treatment_summary_sql(
             "MRN001", None, None
         )
-        self.assertIn("Pat.Pat_ID1 = 'MRN001'", sql_mrn_only)
-        self.assertNotIn("AND TxFld.Plan_Start_DtTm >=", sql_mrn_only)
+        self.assertIn("ID.IDA = ?", sql_mrn_only) # Check for placeholder
+        self.assertNotIn("AND TxFld.Start_DtTm >=", sql_mrn_only)
+        self.assertEqual(params_mrn_only, ["MRN001"])
 
-        sql_with_start = self.mosaiq._build_treatment_summary_sql(
+        sql_with_start, params_with_start = self.mosaiq._build_treatment_summary_sql(
             "MRN002", "2023-01-01", None
         )
-        self.assertIn("AND TxFld.Plan_Start_DtTm >= '2023-01-01'", sql_with_start)
+        self.assertIn("AND TxFld.Start_DtTm >= ?", sql_with_start) # Check for placeholder
+        self.assertEqual(params_with_start, ["MRN002", "2023-01-01"])
 
-        sql_with_end = self.mosaiq._build_treatment_summary_sql(
+        sql_with_end, params_with_end = self.mosaiq._build_treatment_summary_sql(
             "MRN003", None, "2023-12-31"
         )
-        self.assertIn("AND TxFld.Plan_End_DtTm <= '2023-12-31'", sql_with_end)
+        self.assertIn("AND TxFld.Last_Tx_DtTm <= ?", sql_with_end) # Check for placeholder
+        self.assertEqual(params_with_end, ["MRN003", "2023-12-31"])
+
 
     @patch("src.data_sources.mosaiq.Mosaiq.query")
     def test_get_report_raises_mosaiq_query_error(self, mock_query):
@@ -149,29 +154,38 @@ class TestGetReportCLI(unittest.TestCase):
     """
 
     def setUp(self):
-        self.mock_load_toml_config = patch(
-            "src.cli.get_report.load_toml_config"
-        ).start()
+        # Patch open and tomllib.load for environments.toml
+        self.mock_open_patcher = patch("builtins.open", new_callable=mock_open)
+        self.mock_file_open = self.mock_open_patcher.start()
+        
+        self.mock_toml_load_patcher = patch("src.cli.get_report.tomllib.load")
+        self.mock_toml_load = self.mock_toml_load_patcher.start()
+
         self.mock_mosaiq_class = patch("src.cli.get_report.Mosaiq").start()
 
-        self.mock_environments = {
-            "TJU_MOSAIQ": {
-                "source": "Mosaiq",
-                "mosaiq_odbc_driver": "Test Driver For CLI",
+        # Define a more complete mock environments.toml structure
+        self.mock_environments_content = {
+            "TJU_MOSAIQ_ENV": { 
+                "description": "Test TJU Mosaiq Environment",
+                "default_source": "MOSAIQ_PRIMARY_TJU",
+                "sources": {
+                    "MOSAIQ_PRIMARY_TJU": {
+                        "type": "mosaiq",
+                        "db_server": "tju_db_server_cli",
+                        "db_database": "tju_mosaiq_db_cli",
+                        "db_username": "tju_user_cli",
+                        "db_password": "tju_password_placeholder_cli",
+                        "odbc_driver": "TJU Test Driver CLI"
+                    },
+                    "MOSAIQ_SECONDARY_TJU": { 
+                        "type": "mosaiq",
+                        "db_server": "tju_db_server2_cli",
+                        "odbc_driver": "TJU Test Driver 2 CLI"
+                    }
+                }
             }
         }
-        self.mock_db_configs = {
-            "Mosaiq": {
-                "server": "cli_server",
-                "database": "cli_db",
-                "username": "cli_user",
-                "password": "cli_password",
-            }
-        }
-        self.mock_load_toml_config.side_effect = [
-            self.mock_environments,
-            self.mock_db_configs,
-        ]
+        self.mock_toml_load.return_value = self.mock_environments_content
 
         self.mock_mosaiq_instance = MagicMock()
         self.mock_mosaiq_class.return_value = self.mock_mosaiq_instance
@@ -194,10 +208,9 @@ class TestGetReportCLI(unittest.TestCase):
     def test_cli_success_no_data(self, mock_print_report):
         """Test CLI with valid arguments, resulting in no data found."""
         test_args = [
-            "get_report.py", # Script name for sys.argv
-            "--environments_config", "dummy_env.toml",
-            "--dicom_config", "dummy_dicom.toml",
-            "--environment", "TJU_MOSAIQ",
+            "get_report.py", 
+            "TJU_MOSAIQ_ENV", # environment_name
+            # mosaiq_source_alias will use default_source: MOSAIQ_PRIMARY_TJU
             "--mrn", "CLI_MRN001",
         ]
         with patch.object(sys, "argv", test_args):
@@ -206,9 +219,15 @@ class TestGetReportCLI(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0) # Expect success exit
 
         mock_print_report.assert_called_once_with([], "CLI_MRN001", None, None)
+        
+        # Assert Mosaiq was initialized with the correct ODBC driver
+        self.mock_mosaiq_class.assert_called_once_with(odbc_driver="TJU Test Driver CLI")
+        
+        # Assert get_treatment_summary_report was called with correct db_config
+        expected_db_config = self.mock_environments_content["TJU_MOSAIQ_ENV"]["sources"]["MOSAIQ_PRIMARY_TJU"]
         self.mock_mosaiq_instance.get_treatment_summary_report.assert_called_once_with(
             patient_mrn="CLI_MRN001",
-            db_config=self.mock_db_configs["Mosaiq"],
+            db_config=expected_db_config,
             start_date=None,
             end_date=None,
         )
@@ -228,10 +247,7 @@ class TestGetReportCLI(unittest.TestCase):
         )
 
         test_args = [
-            "get_report.py",
-            "--environments_config", "dummy_env.toml",
-            "--dicom_config", "dummy_dicom.toml",
-            "--environment", "TJU_MOSAIQ",
+            "get_report.py", "TJU_MOSAIQ_ENV", "MOSAIQ_SECONDARY_TJU", # Specify source alias
             "--mrn", "CLI_MRN002",
             "--start_date", "2023-01-01",
             "--end_date", "2023-12-31",
@@ -245,14 +261,22 @@ class TestGetReportCLI(unittest.TestCase):
         mock_print_report.assert_called_once_with(
             sample_report_data, "CLI_MRN002", "2023-01-01", "2023-12-31"
         )
+        # Assert Mosaiq was initialized with the correct ODBC driver for the specified alias
+        self.mock_mosaiq_class.assert_called_once_with(odbc_driver="TJU Test Driver 2 CLI")
+        # Assert get_treatment_summary_report was called with correct db_config for the alias
+        expected_db_config_secondary = self.mock_environments_content["TJU_MOSAIQ_ENV"]["sources"]["MOSAIQ_SECONDARY_TJU"]
+        self.mock_mosaiq_instance.get_treatment_summary_report.assert_called_once_with(
+            patient_mrn="CLI_MRN002",
+            db_config=expected_db_config_secondary,
+            start_date="2023-01-01",
+            end_date="2023-12-31"
+        )
+
 
     def test_cli_missing_required_mrn_exits(self):
         """Test CLI exits if required --mrn argument is missing."""
         test_args = [
-            "get_report.py",
-            "--environments_config", "dummy_env.toml",
-            "--dicom_config", "dummy_dicom.toml",
-            "--environment", "TJU_MOSAIQ",
+            "get_report.py", "TJU_MOSAIQ_ENV", # Missing --mrn
         ]
         with patch.object(sys, "argv", test_args):
             with self.assertRaises(SystemExit) as cm:
@@ -261,21 +285,21 @@ class TestGetReportCLI(unittest.TestCase):
 
     def test_cli_config_file_not_found_exits(self):
         """Test CLI exits if a config file is not found (ConfigError)."""
-        self.mock_load_toml_config.side_effect = ConfigError(
-            "File not found dummy.toml"
-        )
+        # Simulate FileNotFoundError when open is called for environments.toml
+        self.mock_file_open.side_effect = FileNotFoundError("environments.toml not found")
+        # self.mock_load_toml_config is no longer used for this specific scenario
 
         test_args = [
-            "get_report.py",
-            "--environments_config", "dummy.toml",
-            "--dicom_config", "d.toml",
-            "--environment", "E",
+            "get_report.py", "ANY_ENV", # Script name for sys.argv
             "--mrn", "M",
         ]
         with patch.object(sys, "argv", test_args):
             with self.assertRaises(SystemExit) as cm:
                 get_report_main()
         self.assertEqual(cm.exception.code, 1)
+        # Check that the error message printed to stderr (by main's except block) contains the relevant info
+        # This requires capturing stderr.
+        # For simplicity, we assume the logger.error call in main() or ConfigError itself is sufficient.
 
     def test_cli_mosaiq_query_error_exits(self):
         """Test CLI exits if Mosaiq query fails (MosaiqQueryError)."""
@@ -284,10 +308,7 @@ class TestGetReportCLI(unittest.TestCase):
         )
 
         test_args = [
-            "get_report.py",
-            "--environments_config", "e.toml",
-            "--dicom_config", "d.toml",
-            "--environment", "TJU_MOSAIQ",
+            "get_report.py", "TJU_MOSAIQ_ENV",
             "--mrn", "M",
         ]
         with patch.object(sys, "argv", test_args):

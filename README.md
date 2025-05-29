@@ -24,36 +24,50 @@ For detailed documentation on specific components, please refer to the `docs/` d
 
 ## Configuration
 
-The system uses TOML configuration files located in the `src/config/` directory.
+The system primarily uses `src/config/environments.toml` for defining operational environments. This file is central to configuring DICOM AE details, database connections, and other environment-specific parameters.
 
-1.  **DICOM Application Entities (`src/config/dicom.toml`)**:
-    *   Define AE Titles, IP addresses, and Ports for all relevant DICOM systems (sources, backup destinations).
-    *   Example:
+1.  **Environments (`src/config/environments.toml`)**:
+    *   This is the **primary configuration file**. It defines different operational environments (e.g., clinical sites like UCLA, TJU).
+    *   Each environment is a top-level TOML table (e.g., `[UCLA]`, `[TJU]`).
+    *   Within each environment, configurations are organized into nested tables:
+        *   `script_ae`: Defines the calling AE Title (AET) for the backup scripts when operating in this environment.
+        *   `sources`: A table containing definitions for various data sources (e.g., ARIA, MIM, Mosaiq). Each source entry includes:
+            *   `type`: Specifies the source type (e.g., "aria", "mim", "mosaiq").
+            *   DICOM AE details (`aet`, `ip`, `port`) if applicable.
+            *   Database connection details (`db_server`, `db_database`, `db_username`, `db_password`, `odbc_driver`) for database sources like Mosaiq.
+            *   For Mosaiq, a `staging_target_alias` can be specified, pointing to an entry in `backup_targets` that will serve as the C-STORE destination for generated RT Records.
+        *   `backup_targets`: A table defining backup destinations. Each entry includes:
+            *   `type`: Specifies the target type (e.g., "orthanc" for the main backup, "dicom_scp" for a generic staging SCP).
+            *   DICOM AE details (`aet`, `ip`, `port`).
+        *   `settings`: Contains environment-specific application settings, such as `max_uids_per_run` or `mosaiq_backup_sql_query`.
+    *   Each environment section (e.g., `[UCLA]`) should also define `default_source` and `default_backup` keys. These keys hold aliases that point to specific entries within the `sources` and `backup_targets` tables for that environment, respectively. This simplifies CLI calls by allowing the user to omit source/backup aliases if the defaults are appropriate.
+    *   Example structure:
         ```toml
-        [ARIA_AE]
-        AETitle = "ARIA_SCU"
-        IP = "192.168.1.100"
-        Port = 104 
-        ```
-    *   **Note**: Port values must be integers.
-    *   For Mosaiq database connections, include a `[db_config]` sub-table under the Mosaiq AE entry if you are using `src/cli/backup.py` for Mosaiq SQL queries:
-        ```toml
-        [Mosaiq] # This is the source_name used in environments.toml
-        # ... other Mosaiq AE details if it also acts as a DICOM AE ...
-        db_config = { server = "MOSAIQ_DB_IP", database = "MOSAIQ_DB_NAME", username = "user", password = "pw" }
+        # Example for src/config/environments.toml:
+        [UCLA]
+        description = "UCLA Testbed Environment"
+        default_source = "ARIA_MAIN"
+        default_backup = "ORTHANC_UCLA_BACKUP"
+
+        [UCLA.script_ae]
+        aet = "UCLA_SCRIPT_SCU"
+
+        [UCLA.sources]
+        ARIA_MAIN = { type = "aria", aet = "ARIA_UCLA_AE", ip = "192.168.1.100", port = 104 }
+        MOSAIQ_DB = { type = "mosaiq", db_server = "ucla_db", db_database = "ucla_mosaiq", db_username = "user_ucla", db_password = "__UCLA_DB_PASSWORD__", odbc_driver = "DefaultDriver", staging_target_alias = "UCLA_MOSAIQ_STAGE" }
+
+        [UCLA.backup_targets]
+        ORTHANC_UCLA_BACKUP = { type = "orthanc", aet = "UCLA_ORTHANC_AE", ip = "192.168.1.200", port = 4242 }
+        UCLA_MOSAIQ_STAGE = { type = "dicom_scp", aet = "UCLA_STAGE_AE", ip = "192.168.1.201", port = 11113 }
+
+        [UCLA.settings]
+        max_uids_per_run = 100
+        # mosaiq_backup_sql_query = "SELECT ..."
         ```
 
-
-2.  **Environments (`src/config/environments.toml`)**:
-    *   Define different operational environments (e.g., clinical sites like UCLA, TJU_Mosaiq, TJU_MIM).
-    *   Each environment specifies its data `source` (name matching an entry in `dicom.toml`), `backup` target (name matching an entry in `dicom.toml`), and any source-specific configurations.
-    *   For Mosaiq sources, specify the ODBC driver:
-        ```toml
-        [TJU_Mosaiq]
-        source = "Mosaiq" # Must match a key in dicom.toml
-        backup = "ORTHANC_BACKUP" # Must match a key in dicom.toml
-        mosaiq_odbc_driver = "ODBC Driver 17 for SQL Server" 
-        ```
+2.  **DICOM Configuration (`src/config/dicom.toml`)**:
+    *   This file is now **largely deprecated**. All environment-specific DICOM AE definitions and database configurations have been moved into `environments.toml`.
+    *   It might be kept for truly global, non-environment-specific settings if any arise, but currently, all operational AE and DB details are expected to be in `environments.toml`.
 
 3.  **Logging (`src/config/logging.toml`)**:
     *   Configure formatters, handlers (console, file, email), and loggers for different modules.
@@ -61,73 +75,61 @@ The system uses TOML configuration files located in the `src/config/` directory.
 
 ## Running the CLI Applications
 
-All CLI scripts are located in `src/cli/` and should be run as Python modules from the project's root directory. Configuration files are typically found automatically if the scripts are run from the root, or paths can be specified.
+All CLI scripts are located in `src/cli/` and should be run as Python modules from the project's root directory. The primary argument for most scripts is now the `<environment_name>`, which corresponds to a top-level section in `src/config/environments.toml`.
 
 1.  **Backup Data (`backup.py`)**:
-    *   Backs up DICOM data for a specified environment.
+    *   Backs up DICOM data for a specified environment and source.
     *   Usage:
         ```bash
-        python -m src.cli.backup <environment_name>
+        python -m src.cli.backup <environment_name> [source_alias]
         ```
     *   Example:
         ```bash
-        python -m src.cli.backup TJU_Mosaiq
+        python -m src.cli.backup UCLA ARIA_MAIN
+        # To use the default_source for UCLA:
+        python -m src.cli.backup UCLA
         ```
-    *   (Default config paths are `src/config/environments.toml` and `src/config/dicom.toml`)
 
 2.  **Query Data Sources (`query.py`)**:
     *   Queries information from data sources using DICOM C-FIND.
     *   Note: For Mosaiq, this script currently only sets up the data source; actual SQL query execution based on arguments is not implemented. It's primarily for DICOM Q/R sources.
     *   Usage:
         ```bash
-        python -m src.cli.query --environments_config <path_to_environments.toml> \
-                                  --dicom_config <path_to_dicom.toml> \
-                                  --environment <env_name> \
-                                  [--mrn <mrn>] [--treatment_date <date>] [--study_date <date>]
+        python -m src.cli.query <environment_name> [source_alias] [--mrn <mrn>] [--treatment_date <date>] [--study_date <date>]
         ```
     *   Example:
         ```bash
-        python -m src.cli.query --environments_config src/config/environments.toml \
-                                  --dicom_config src/config/dicom.toml \
-                                  --environment UCLA --mrn "PAT123"
+        python -m src.cli.query UCLA ARIA_MAIN --mrn "PAT123"
         ```
 
 3.  **Validate Data (`validate.py`)**:
     *   Validates DICOM data consistency between a source and the Orthanc backup.
-    *   Retrieves data from the source via C-MOVE and verifies against Orthanc using its REST API.
+    *   Retrieves data from the source via C-MOVE and verifies against Orthanc.
     *   Usage:
         ```bash
-        python -m src.cli.validate <environment_name> \
-                                  [--env_config <path_to_environments.toml>] \
-                                  [--dicom_config <path_to_dicom.toml>] \
-                                  [--log_level <DEBUG|INFO|WARNING|ERROR>]
+        python -m src.cli.validate <environment_name> [source_alias] [backup_alias] [--log_level <DEBUG|INFO|WARNING|ERROR>]
         ```
     *   Example:
         ```bash
-        python -m src.cli.validate TJU_Mosaiq --log_level DEBUG
+        python -m src.cli.validate UCLA ARIA_MAIN ORTHANC_UCLA_BACKUP --log_level DEBUG
         ```
-    *   (Default config paths are `src/config/environments.toml` and `src/config/dicom.toml`)
 
 4.  **Get Treatment Summary Report (`get_report.py`)**:
     *   Retrieves or generates a treatment summary report, currently focused on Mosaiq data sources.
     *   This script uses the `get_treatment_summary_report` method of the `Mosaiq` data source class.
     *   Usage:
         ```bash
-        python -m src.cli.get_report --environments_config <path_to_environments.toml> \
-                                     --dicom_config <path_to_dicom.toml> \
-                                     --environment <mosaiq_env_name> \
-                                     --mrn <patient_mrn> \
-                                     [--start_date <YYYY-MM-DD>] [--end_date <YYYY-MM-DD>]
+        python -m src.cli.get_report <environment_name> [mosaiq_source_alias] --mrn <patient_mrn> [--start_date <YYYY-MM-DD>] [--end_date <YYYY-MM-DD>]
         ```
     *   Example:
         ```bash
-        python -m src.cli.get_report --environment TJU_MOSAIQ --mrn "PAT007" --start_date "2023-01-01"
+        python -m src.cli.get_report UCLA MOSAIQ_DB --mrn "PAT007" --start_date "2023-01-01"
         ```
     *   For full details on all options, run `python -m src.cli.get_report --help`.
     *   More detailed documentation is available in [CLI Tools Documentation](docs/cli_tools.md).
 
 5.  **DICOM Network Utilities (`dicom_utils.py`)**:
-    *   A general-purpose command-line utility for ad-hoc DICOM network operations: C-ECHO, C-FIND, C-MOVE, and C-STORE.
+    *   A general-purpose command-line utility for ad-hoc DICOM network operations: C-ECHO, C-FIND, C-MOVE, C-GET, and C-STORE.
     *   This tool is useful for testing connectivity, querying remote AEs, initiating transfers, or sending DICOM files.
     *   Common arguments for all sub-commands include `--aet` (Calling AE Title), `--aec` (Called AE Title), `--host`, and `--port`.
     *   Usage Examples:
@@ -161,9 +163,9 @@ All CLI scripts are located in `src/cli/` and should be run as Python modules fr
 The unit tests for this project are designed to run in isolation, without requiring dependencies on external DICOM services or live Orthanc instances. This is achieved through:
 
 -   **Mock DICOM Services**: For testing data source interactions (ARIA, MIM, and the DICOM C-STORE part of Mosaiq), an internal mock DICOM server (`MockDicomServer`) is used. This server simulates C-FIND, C-MOVE, and C-STORE responses, allowing verification of the DICOM communication logic within the respective data source classes.
--   **HTTP Mocking**: For testing the Orthanc backup system interface, the `requests-mock` library is used. This allows simulation of Orthanc's REST API responses, ensuring that the `Orthanc.store()` and `Orthanc.verify()` methods correctly handle various scenarios (e.g., success, failure, data mismatch).
+-   **Mocking for Orthanc Interface**: For testing the Orthanc backup system interface (`src/backup_systems/orthanc.py`), `unittest.mock` is used to simulate DICOM C-FIND and C-GET network operations, removing the previous dependency on `requests-mock`.
 
-All test-specific dependencies, such as `requests-mock`, are listed in the `requirements.txt` file. Unit tests are located in the `src/tests/` directory. For an overview of the test files and specific strategies, refer to `docs/test_files.md`.
+All test-specific dependencies are listed in the `requirements.txt` file. Unit tests are located in the `src/tests/` directory. For an overview of the test files and specific strategies, refer to `docs/test_files.md`.
 
 Before running the tests, ensure all dependencies are installed or updated by running: `pip install -r requirements.txt`
 
@@ -218,8 +220,8 @@ Located in `src/cli/`:
 
 ### Configuration
 Located in `src/config/`:
--   `dicom.toml`: DICOM AE definitions, Mosaiq DB connection details.
--   `environments.toml`: Environment-specific settings (source, backup, ODBC driver).
+-   `environments.toml`: Primary configuration file defining operational environments (sites), including their specific DICOM AEs, database connections, backup targets, script AETs, and other settings.
+-   `dicom.toml`: Largely deprecated. Most AE and DB configurations are now in `environments.toml`.
 -   `logging.toml`: Logging configuration for the system.
 
 ### Flask Application

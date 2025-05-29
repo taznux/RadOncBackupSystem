@@ -31,27 +31,26 @@ Example:
     python -m src.cli.validate src/config/environments.toml src/config/dicom.toml TJU_Mosaiq
 """
 import argparse
-import logging # Changed from print to logging
+import logging 
 import tomllib
 from pydicom.dataset import Dataset
 from pynetdicom import AE, evt, StoragePresentationContexts, ALL_TRANSFER_SYNTAXES
 from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove, VerificationSOPClass
 from src.backup_systems.orthanc import Orthanc
 import io
-import pydicom # For dcmwrite, uid
+import pydicom 
 import os
-# import tempfile # Unused currently
-# import shutil # Unused currently
+from typing import Optional # Added
 
 logger = logging.getLogger(__name__)
 
 # Global list to store received datasets' bytes during C-MOVE
 GLOBAL_RECEIVED_DATASETS = []
 
-# Configuration paths (can be made configurable via args if needed)
+# Configuration paths
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), '..', 'config')
-DEFAULT_ENV_CONFIG_PATH = os.path.join(CONFIG_DIR, 'environments.toml')
-DEFAULT_DICOM_CONFIG_PATH = os.path.join(CONFIG_DIR, 'dicom.toml')
+ENVIRONMENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, 'environments.toml')
+# DEFAULT_DICOM_CONFIG_PATH is removed as dicom.toml is no longer directly loaded by this script.
 
 
 def _handle_move_store(event: evt.Event) -> int:
@@ -68,107 +67,107 @@ def _handle_move_store(event: evt.Event) -> int:
     :rtype: int
     """
     ds = event.dataset
-    # Ensure file_meta is present, as it might not be if received over network
     if not hasattr(ds, 'file_meta'):
         logger.debug("Dataset received via C-STORE has no file_meta, creating one.")
         ds.file_meta = pydicom.Dataset()
-        # Basic file_meta population. TransferSyntaxUID is crucial.
-        # If the sender doesn't negotiate well, this might be needed.
-        # However, pynetdicom usually handles this based on negotiated context.
-        ds.file_meta.TransferSyntaxUID = event.context.transfer_syntax[0] # Use negotiated transfer syntax
+        ds.file_meta.TransferSyntaxUID = event.context.transfer_syntax[0] 
         ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
         ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
     
     logger.info(f"Received SOPInstanceUID: {ds.SOPInstanceUID} via C-STORE for C-MOVE operation.")
     try:
         with io.BytesIO() as bio:
-            # write_like_original=False ensures that file_meta reflects the negotiated Transfer Syntax.
             pydicom.dcmwrite(bio, ds, write_like_original=False) 
             GLOBAL_RECEIVED_DATASETS.append(bio.getvalue())
         logger.debug(f"Successfully processed and stored bytes for SOPInstanceUID: {ds.SOPInstanceUID}")
     except Exception as e:
         logger.error(f"Error processing dataset {ds.SOPInstanceUID} in _handle_move_store: {e}", exc_info=True)
-        return 0xA700 # Failure status: Out of resources / Unable to process
+        return 0xA700 
     
-    return 0x0000 # Success
+    return 0x0000 
 
-def validate_data(env_config_path: str, dicom_config_path: str, environment_name: str):
+def validate_data(environment_name: str, source_alias_arg: Optional[str], backup_alias_arg: Optional[str]):
     """
     Validates data consistency between a source DICOM AE and an Orthanc backup.
 
     Performs C-FIND on the source, then C-MOVEs a sample of data to a local SCP,
     and for each received instance, verifies it against Orthanc using `Orthanc.verify()`.
 
-    :param env_config_path: Path to the environments TOML configuration file.
-    :type env_config_path: str
-    :param dicom_config_path: Path to the DICOM AEs TOML configuration file.
-    :type dicom_config_path: str
-    :param environment_name: The name of the environment to validate (e.g., 'UCLA_ARIA').
-                             Must be a key in the environments configuration.
+    :param environment_name: The name of the environment to validate.
     :type environment_name: str
+    :param source_alias_arg: Optional alias of the source to validate. Uses environment default if None.
+    :type source_alias_arg: Optional[str]
+    :param backup_alias_arg: Optional alias of the backup target to validate against. Uses environment default if None.
+    :type backup_alias_arg: Optional[str]
     :raises ValueError: If configuration is missing or invalid.
-    :raises FileNotFoundError: If configuration files are not found.
-    :raises tomllib.TOMLDecodeError: If configuration files are not valid TOML.
+    :raises FileNotFoundError: If environments.toml is not found.
+    :raises tomllib.TOMLDecodeError: If environments.toml is not valid TOML.
     """
     global GLOBAL_RECEIVED_DATASETS
-    logger.info(f"Starting validation for environment: {environment_name}")
+    logger.info(f"Starting validation for environment: {environment_name}, Source: {source_alias_arg or 'default'}, Backup: {backup_alias_arg or 'default'}")
 
     try:
-        with open(env_config_path, 'rb') as f:
+        with open(ENVIRONMENTS_CONFIG_PATH, 'rb') as f:
             environments_cfg = tomllib.load(f)
-        with open(dicom_config_path, 'rb') as f:
-            dicom_cfg = tomllib.load(f)
     except FileNotFoundError as e:
-        logger.error(f"Configuration file not found: {e.filename}", exc_info=True)
+        logger.error(f"Environments configuration file not found: {ENVIRONMENTS_CONFIG_PATH}", exc_info=True)
         raise
     except tomllib.TOMLDecodeError as e:
-        logger.error(f"Error decoding TOML configuration: {e}", exc_info=True)
+        logger.error(f"Error decoding environments.toml: {e}", exc_info=True)
         raise
 
-    if environment_name not in environments_cfg:
-        logger.error(f"Environment '{environment_name}' not found in {env_config_path}")
+    env_block = environments_cfg.get(environment_name)
+    if not env_block:
+        logger.error(f"Environment '{environment_name}' not found in {ENVIRONMENTS_CONFIG_PATH}")
         raise ValueError(f"Environment '{environment_name}' not found.")
-    env_config = environments_cfg[environment_name]
     
-    source_name = env_config.get('source') or env_config.get('source1') # Handle TJU legacy
-    if not source_name:
-        logger.error(f"No 'source' or 'source1' defined for environment '{environment_name}'.")
-        raise ValueError(f"No data source defined for environment '{environment_name}'.")
+    script_ae_config = env_block.get('script_ae')
+    if not script_ae_config or not script_ae_config.get('aet'):
+        raise ValueError(f"Missing 'script_ae' configuration or 'aet' in environment '{environment_name}'.")
+    local_ae_title = script_ae_config['aet']
+    local_ae_port = int(script_ae_config.get('port', 11113))
 
-    if source_name not in dicom_cfg:
-        logger.error(f"Configuration for source '{source_name}' not found in {dicom_config_path}.")
-        raise ValueError(f"Configuration for source '{source_name}' not found.")
-    source_ae_config = dicom_cfg[source_name]
+    actual_source_alias = source_alias_arg or env_block.get('default_source')
+    if not actual_source_alias:
+        raise ValueError(f"No source alias provided and no 'default_source' defined for environment '{environment_name}'.")
+    source_ae_config = env_block.get('sources', {}).get(actual_source_alias)
+    if not source_ae_config or not all(k in source_ae_config for k in ['aet', 'ip', 'port']):
+        raise ValueError(f"Configuration for source alias '{actual_source_alias}' is missing or incomplete (aet, ip, port) in environment '{environment_name}'.")
 
-    # Backup system (Orthanc)
-    # Orthanc URL can be passed to constructor if needed from config, e.g. dicom_cfg[env_config['backup']]['URL']
-    # For now, Orthanc class uses its internal ORTHANC_URL or one passed to init.
-    orthanc_backup_config_name = env_config.get('backup')
-    orthanc_url_from_config = None
-    if orthanc_backup_config_name and orthanc_backup_config_name in dicom_cfg:
-        orthanc_url_from_config = dicom_cfg[orthanc_backup_config_name].get('URL') # Assuming URL key if specified
+    actual_backup_alias = backup_alias_arg or env_block.get('default_backup')
+    if not actual_backup_alias:
+        raise ValueError(f"No backup alias provided and no 'default_backup' defined for environment '{environment_name}'.")
+    backup_target_config = env_block.get('backup_targets', {}).get(actual_backup_alias)
+    if not backup_target_config or not all(k in backup_target_config for k in ['aet', 'ip', 'port', 'type']):
+        raise ValueError(f"Configuration for backup target alias '{actual_backup_alias}' is missing or incomplete (aet, ip, port, type) in environment '{environment_name}'.")
+    if backup_target_config.get('type') != 'orthanc':
+        raise ValueError(f"Backup target '{actual_backup_alias}' must be of type 'orthanc' for validation.")
+
+    orthanc_verifier = Orthanc(
+        calling_aet=local_ae_title,
+        peer_aet=backup_target_config['aet'],
+        peer_host=backup_target_config['ip'],
+        peer_port=int(backup_target_config['port'])
+    )
     
-    orthanc_verifier = Orthanc(orthanc_url=orthanc_url_from_config) # Pass URL if configured, else uses default
-
-    local_ae_port = 11113 # Example port, ensure it's free and firewall allows
-    local_ae_title = "VALIDATE_SCP" # AE Title for our local SCP
-
     ae = AE(ae_title=local_ae_title)
-    for context in StoragePresentationContexts: # SCP supports all standard storage
+    for context in StoragePresentationContexts: 
         ae.add_supported_context(context.abstract_syntax, ALL_TRANSFER_SYNTAXES)
     
-    ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind) # SCU role for C-FIND
-    ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove) # SCU role for C-MOVE
-    ae.add_requested_context(VerificationSOPClass) # SCU role for C-ECHO
+    ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind) 
+    ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove) 
+    ae.add_requested_context(VerificationSOPClass) 
 
     scp_handlers = [(evt.EVT_C_STORE, _handle_move_store)]
-    # Listen on 0.0.0.0 to accept connections from remote source PACS for C-MOVE
     scp_server = ae.start_server(("0.0.0.0", local_ae_port), block=False, evt_handlers=scp_handlers)
     logger.info(f"Local C-STORE SCP server started on port {local_ae_port} with AE Title {local_ae_title} for validation.")
 
-    # C-ECHO to source
-    logger.info(f"Attempting C-ECHO to source {source_ae_config['AETitle']} at {source_ae_config['IP']}:{source_ae_config['Port']}")
-    assoc_echo = ae.associate(source_ae_config['IP'], source_ae_config['Port'], ae_title=source_ae_config['AETitle'])
+    source_ip = source_ae_config['ip']
+    source_port = int(source_ae_config['port'])
+    source_aet = source_ae_config['aet']
+
+    logger.info(f"Attempting C-ECHO to source {source_aet} at {source_ip}:{source_port}")
+    assoc_echo = ae.associate(source_ip, source_port, ae_title=source_aet)
     if assoc_echo.is_established:
         logger.info(f"C-ECHO association established. Sending C-ECHO request...")
         status_echo = assoc_echo.send_c_echo()
@@ -180,7 +179,7 @@ def validate_data(env_config_path: str, dicom_config_path: str, environment_name
         logger.info("C-ECHO successful.")
         assoc_echo.release()
     else:
-        logger.error(f"C-ECHO association to source {source_ae_config['AETitle']} failed. Aborting.")
+        logger.error(f"C-ECHO association to source {source_aet} failed. Aborting.")
         scp_server.shutdown()
         return
 
@@ -193,8 +192,8 @@ def validate_data(env_config_path: str, dicom_config_path: str, environment_name
     # query_ds.StudyDate = "YYYYMMDD-YYYYMMDD" 
 
     datasets_to_verify_details = []
-    logger.info(f"Attempting C-FIND to {source_ae_config['AETitle']} for series list.")
-    assoc_find = ae.associate(source_ae_config['IP'], source_ae_config['Port'], ae_title=source_ae_config['AETitle'])
+    logger.info(f"Attempting C-FIND to {source_aet} for series list.")
+    assoc_find = ae.associate(source_ip, source_port, ae_title=source_aet)
     if assoc_find.is_established:
         logger.info("C-FIND association established. Sending C-FIND request.")
         responses = assoc_find.send_c_find(query_ds, StudyRootQueryRetrieveInformationModelFind)
@@ -219,7 +218,7 @@ def validate_data(env_config_path: str, dicom_config_path: str, environment_name
                 break
         assoc_find.release()
     else:
-        logger.error(f"C-FIND association to {source_ae_config['AETitle']} failed.")
+        logger.error(f"C-FIND association to {source_aet} failed.")
         scp_server.shutdown()
         return
     
@@ -245,7 +244,7 @@ def validate_data(env_config_path: str, dicom_config_path: str, environment_name
         move_dataset.SeriesInstanceUID = current_series_uid
         
         logger.info(f"Attempting C-MOVE for Series {current_series_uid} to local SCP {local_ae_title}")
-        assoc_move = ae.associate(source_ae_config['IP'], source_ae_config['Port'], ae_title=source_ae_config['AETitle'])
+        assoc_move = ae.associate(source_ip, source_port, ae_title=source_aet)
         if assoc_move.is_established:
             logger.info("C-MOVE association established. Sending C-MOVE request.")
             responses = assoc_move.send_c_move(move_dataset, local_ae_title, StudyRootQueryRetrieveInformationModelMove)
@@ -269,7 +268,7 @@ def validate_data(env_config_path: str, dicom_config_path: str, environment_name
                     break
             assoc_move.release()
         else:
-            logger.error(f"C-MOVE association to {source_ae_config['AETitle']} failed for series {current_series_uid}.")
+            logger.error(f"C-MOVE association to {source_aet} failed for series {current_series_uid}.")
             continue 
 
         if not GLOBAL_RECEIVED_DATASETS:
@@ -306,21 +305,23 @@ if __name__ == '__main__':
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        'environment_name', 
-        type=str, 
-        help='Name of the environment to validate (must be defined in the environments config file).'
+        'environment_name',
+        type=str,
+        help='Name of the environment to use (defined in environments.toml).'
     )
     parser.add_argument(
-        '--env_config', 
-        type=str, 
-        default=DEFAULT_ENV_CONFIG_PATH,
-        help='Path to the environments configuration file (e.g., environments.toml).'
+        'source_alias',
+        type=str,
+        nargs='?',
+        default=None,
+        help="Alias of the source to validate (from environment's [sources]). Uses default_source if not provided."
     )
     parser.add_argument(
-        '--dicom_config', 
-        type=str, 
-        default=DEFAULT_DICOM_CONFIG_PATH,
-        help='Path to the DICOM AE configuration file (e.g., dicom.toml).'
+        'backup_alias',
+        type=str,
+        nargs='?',
+        default=None,
+        help="Alias of the backup target to validate against (from environment's [backup_targets]). Uses default_backup if not provided."
     )
     parser.add_argument(
         '--log_level',
@@ -336,7 +337,7 @@ if __name__ == '__main__':
     logger.info(f"Logging level set to {args.log_level}")
 
     try:
-        validate_data(args.env_config, args.dicom_config, args.environment_name)
+        validate_data(args.environment_name, args.source_alias, args.backup_alias)
     except ValueError as ve:
         logger.critical(f"Validation process initialization failed: {ve}", exc_info=True)
     except FileNotFoundError as fnfe:
