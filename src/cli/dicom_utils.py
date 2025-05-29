@@ -358,34 +358,27 @@ def _handle_move_scu(args: argparse.Namespace):
     #     # main() will not exit with error unless an exception is raised.
     #     return
 
-    identifier_dataset = _build_move_identifier_dataset(args)
-    # For IMAGE level C-MOVE, the identifier must also contain SOPInstanceUID.
-    # _build_move_identifier_dataset currently does not add SOPInstanceUID.
-    # This needs to be added if query_level is IMAGE.
-    # However, the args passed to _handle_move_scu from the test's side_effect *does* include sop_instance_uid.
-    # The _build_move_identifier_dataset is used if _handle_move_scu is called as a CLI command.
-    # The args namespace passed from the side_effect is more complete.
-    # The `identifier_dataset` for C-MOVE should be built from `args` directly.
-    # Let's ensure SOPInstanceUID is part of the identifier if query_level is IMAGE.
-    if args.query_level == "IMAGE" and hasattr(args, 'sop_instance_uid') and args.sop_instance_uid:
-        identifier_dataset.SOPInstanceUID = args.sop_instance_uid
-        # Also ensure PatientID, Study UID, Series UID are present if known from args,
-        # as _build_move_identifier_dataset might not have access to the full context.
-        # The Namespace 'args' passed to _handle_move_scu from the side_effect is comprehensive.
-        # So, we should primarily rely on 'args' to build the identifier for C-MOVE.
-        
-        # Re-building identifier_dataset based on args for C-MOVE
-        identifier_dataset = Dataset()
-        identifier_dataset.QueryRetrieveLevel = args.query_level
-        if hasattr(args, 'patient_id') and args.patient_id:
-            identifier_dataset.PatientID = args.patient_id
-        if hasattr(args, 'study_uid') and args.study_uid:
-            identifier_dataset.StudyInstanceUID = args.study_uid
-        if hasattr(args, 'series_uid') and args.series_uid:
-            identifier_dataset.SeriesInstanceUID = args.series_uid
-        if hasattr(args, 'sop_instance_uid') and args.sop_instance_uid: # Redundant given outer if, but safe
+    # Construct identifier_dataset directly from args
+    identifier_dataset = Dataset()
+    identifier_dataset.QueryRetrieveLevel = args.query_level
+    
+    if hasattr(args, 'patient_id') and args.patient_id:
+        identifier_dataset.PatientID = args.patient_id
+    if hasattr(args, 'study_uid') and args.study_uid:
+        identifier_dataset.StudyInstanceUID = args.study_uid
+    if hasattr(args, 'series_uid') and args.series_uid:
+        identifier_dataset.SeriesInstanceUID = args.series_uid
+    
+    # SOPInstanceUID should only be set if QueryRetrieveLevel is IMAGE
+    if args.query_level == "IMAGE":
+        if hasattr(args, 'sop_instance_uid') and args.sop_instance_uid:
             identifier_dataset.SOPInstanceUID = args.sop_instance_uid
-            
+        else:
+            # For IMAGE level, SOPInstanceUID is mandatory.
+            # This case should ideally be caught by validation in ARIA.transfer or earlier.
+            logger.error("SOPInstanceUID is required for IMAGE level C-MOVE but not provided in args.")
+            raise DicomOperationError("SOPInstanceUID missing for IMAGE level C-MOVE.")
+
     model = _get_move_model(args.query_level)
     event_handlers = [(evt.EVT_C_MOVE, _on_move_response)] # Corrected event type
     assoc = None
