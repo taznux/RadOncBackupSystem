@@ -9,7 +9,10 @@ details, backup parameters, and data source types (ARIA, MIM, Mosaiq).
 import argparse
 # import functools # For functools.partial - No longer needed
 # import io - No longer needed for handle_store
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from typing import Optional, Dict, Any, Tuple, List 
 from argparse import Namespace # Added
 
@@ -483,18 +486,23 @@ def backup_data(environment_name: str, source_alias: Optional[str] = None):
 
     logger.info(f"Backup process for environment '{environment_name}', source '{actual_source_alias}' completed.")
 
-
-if __name__ == "__main__":
+def main(argv: Optional[List[str]] = None):
+    """
+    Command-line interface entry point for the backup script.
+    Parses arguments and calls backup_data.
+    """
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.INFO, # Default level, can be overridden by args or further config
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stdout,
     )
     # Ensure the module's logger also uses this basic config if no other handlers are set
+    # This setup is basic; a more robust app might use a global logging config.
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler(sys.stdout))
-        logger.setLevel(logging.INFO)
-
+        # Check if logging level is already set by basicConfig, avoid overriding if lower
+        if logger.level == logging.NOTSET or logger.level > logging.INFO:
+             logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser(
         description="Backup DICOM data from configured environments."
@@ -507,23 +515,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "source_alias",
         type=str,
-        nargs='?', # Optional positional argument
-        default=None, # Will be None if not provided
+        nargs='?', 
+        default=None, 
         help="Alias of the source to backup (defined under the environment's [sources] in environments.toml). Uses default_source if not provided.",
     )
-    args = parser.parse_args()
+    
+    # If argv is None (e.g. called from test without args), parse from sys.argv[1:]
+    # Otherwise, parse from the provided argv list (e.g. for testing specific arg sets)
+    processed_args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     try:
-        backup_data(args.environment_name, args.source_alias)
-        sys.exit(0)
-    except (BackupConfigError, ValueError) as e: # ValueError is often from config issues
-        # Error message already logged by backup_data or its helpers
-        print(f"Error: {e}", file=sys.stderr) # User-facing concise error
-        sys.exit(1)
-    except BackupError as e: # Other backup specific errors
+        backup_data(processed_args.environment_name, processed_args.source_alias)
+        # For library use, allow successful completion without sys.exit
+        # If called as script, __main__ block will handle exit.
+    except (BackupConfigError, ValueError) as e: 
+        print(f"Error: {e}", file=sys.stderr) 
+        sys.exit(1) # Exit for CLI errors
+    except BackupError as e: 
         print(f"Backup Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e: # Unexpected errors
-        # backup_data should have logged this with exc_info=True
+        sys.exit(1) # Exit for CLI errors
+    except Exception as e: 
         print(f"An unexpected critical error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(1) # Exit for CLI errors
+
+if __name__ == "__main__":
+    main() # sys.argv will be handled by main's default
