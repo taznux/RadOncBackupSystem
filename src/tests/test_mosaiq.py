@@ -205,7 +205,7 @@ class TestMosaiqTransfer(unittest.TestCase):
         # _prepare_rt_record_for_transfer in Mosaiq class will populate
         # SOPInstanceUID, SOPClassUID, and file_meta.
 
-    @patch('src.data_sources.mosaiq.AE')
+    @patch('pynetdicom.AE')
     @patch('src.data_sources.mosaiq.Mosaiq._prepare_rt_record_for_transfer', wraps=Mosaiq._prepare_rt_record_for_transfer)
     def test_transfer_cstore_success_returns_true(self, mock_prepare_record, mock_ae_class):
         mock_ae_instance = MagicMock()
@@ -230,7 +230,7 @@ class TestMosaiqTransfer(unittest.TestCase):
         mock_assoc.send_c_store.assert_called_once_with(self.sample_ds)
         mock_assoc.release.assert_called_once()
 
-    @patch('src.data_sources.mosaiq.AE')
+    @patch('pynetdicom.AE')
     @patch('src.data_sources.mosaiq.Mosaiq._prepare_rt_record_for_transfer') 
     def test_transfer_cstore_failure_status_returns_false(self, mock_prepare_record, mock_ae_class):
         mock_ae_instance = MagicMock()
@@ -248,7 +248,7 @@ class TestMosaiqTransfer(unittest.TestCase):
         self.assertFalse(result)
         mock_prepare_record.assert_called_once_with(self.sample_ds)
 
-    @patch('src.data_sources.mosaiq.AE')
+    @patch('pynetdicom.AE')
     @patch('src.data_sources.mosaiq.Mosaiq._prepare_rt_record_for_transfer')
     def test_transfer_association_failure_returns_false(self, mock_prepare_record, mock_ae_class):
         mock_ae_instance = MagicMock()
@@ -265,7 +265,7 @@ class TestMosaiqTransfer(unittest.TestCase):
         self.assertFalse(result)
         mock_prepare_record.assert_called_once_with(self.sample_ds)
 
-    @patch('src.data_sources.mosaiq.AE')
+    @patch('pynetdicom.AE')
     @patch('src.data_sources.mosaiq.Mosaiq._prepare_rt_record_for_transfer')
     def test_transfer_no_accepted_contexts_returns_false(self, mock_prepare_record, mock_ae_class):
         mock_ae_instance = MagicMock()
@@ -280,7 +280,7 @@ class TestMosaiqTransfer(unittest.TestCase):
         mock_assoc.send_c_store.assert_not_called()
         mock_prepare_record.assert_called_once_with(self.sample_ds)
 
-    @patch('src.data_sources.mosaiq.AE')
+    @patch('pynetdicom.AE')
     @patch('src.data_sources.mosaiq.Mosaiq._prepare_rt_record_for_transfer')
     def test_transfer_send_c_store_raises_exception_returns_false(self, mock_prepare_record, mock_ae_class):
         mock_ae_instance = MagicMock()

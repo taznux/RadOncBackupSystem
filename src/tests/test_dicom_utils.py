@@ -11,18 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from pydicom.dataset import Dataset
 from pynetdicom import AE  # For type hinting in tests if needed
 from pynetdicom.association import Association  # For type hinting
-from pynetdicom.sop_class import (
-    VerificationSOPClass,
-    PatientRootQueryRetrieveInformationModelFind,
-    StudyRootQueryRetrieveInformationModelFind,
-    PatientRootQueryRetrieveInformationModelMove,
-    StudyRootQueryRetrieveInformationModelMove,
-    PatientRootQueryRetrieveInformationModelGet, # Added for C-GET
-    StudyRootQueryRetrieveInformationModelGet,   # Added for C-GET
-    CompositeInstanceRootRetrieveGet,            # Added for C-GET
-    StoragePresentationContexts,                 # Added for C-GET (used by _handle_get_scu)
-    RTPlanStorage, 
-)
+from pynetdicom import sop_class # Updated import
 from pynetdicom.status import (
     Status as PynetdicomStatus,
 ) 
@@ -89,7 +78,7 @@ class TestDicomUtilsEchoSCUHandler(unittest.TestCase):
             self.args.aec,
             self.args.host,
             self.args.port,
-            [VerificationSOPClass],
+            [sop_class.Verification],
             None # event_handlers
         )
         mock_assoc.send_c_echo.assert_called_once()
@@ -357,11 +346,11 @@ class TestDicomUtilsHelpers(unittest.TestCase):
         mock_ae_class.return_value = mock_ae_inst
 
         assoc = _establish_association(
-            "CALLAET", "CALLEDAET", "host", 104, [VerificationSOPClass]
+            "CALLAET", "CALLEDAET", "host", 104, [sop_class.Verification]
         )
         self.assertTrue(assoc.is_established)
         mock_ae_inst.add_requested_context.assert_called_once_with(
-            VerificationSOPClass
+            sop_class.Verification
         )
         mock_ae_inst.associate.assert_called_once_with(
             "host", 104, ae_title="CALLEDAET", evt_handlers=None
@@ -381,7 +370,7 @@ class TestDicomUtilsHelpers(unittest.TestCase):
 
         with self.assertRaises(DicomConnectionError) as ctx:
             _establish_association(
-                "CALLAET", "CALLEDAET", "host", 104, [VerificationSOPClass]
+                "CALLAET", "CALLEDAET", "host", 104, [sop_class.Verification]
             )
         self.assertIn("Association rejected", str(ctx.exception))
 
@@ -395,7 +384,7 @@ class TestDicomUtilsHelpers(unittest.TestCase):
 
         with self.assertRaises(DicomConnectionError) as ctx:
             _establish_association(
-                "CALLAET", "CALLEDAET", "host", 104, [VerificationSOPClass]
+                "CALLAET", "CALLEDAET", "host", 104, [sop_class.Verification]
             )
         self.assertIn("Association failed: Network unreachable", str(ctx.exception))
 
@@ -418,10 +407,10 @@ class TestDicomUtilsHelpers(unittest.TestCase):
     def test_get_find_model(self):
         self.assertEqual(
             _get_find_model("PATIENT").UID,
-            PatientRootQueryRetrieveInformationModelFind.UID,
+            sop_class.PatientRootQueryRetrieveInformationModelFind.UID,
         )
         self.assertEqual(
-            _get_find_model("STUDY").UID, StudyRootQueryRetrieveInformationModelFind.UID
+            _get_find_model("STUDY").UID, sop_class.StudyRootQueryRetrieveInformationModelFind.UID
         )
 
     def test_build_move_identifier_dataset(self):
@@ -440,10 +429,10 @@ class TestDicomUtilsHelpers(unittest.TestCase):
     def test_get_move_model(self):
         self.assertEqual(
             _get_move_model("PATIENT").UID,
-            PatientRootQueryRetrieveInformationModelMove.UID,
+            sop_class.PatientRootQueryRetrieveInformationModelMove.UID,
         )
         self.assertEqual(
-            _get_move_model("STUDY").UID, StudyRootQueryRetrieveInformationModelMove.UID
+            _get_move_model("STUDY").UID, sop_class.StudyRootQueryRetrieveInformationModelMove.UID
         )
 
     @patch("src.cli.dicom_utils.os.path.exists")
@@ -513,7 +502,7 @@ class TestDicomUtilsHelpers(unittest.TestCase):
 
     def test_get_storage_contexts(self):
         contexts = _get_storage_contexts()
-        self.assertIn(RTPlanStorage, contexts)
+        self.assertIn(sop_class.RTPlanStorage, contexts)
         self.assertIn("1.2.840.10008.5.1.4.1.1.2", contexts)
 
 

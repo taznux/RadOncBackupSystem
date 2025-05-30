@@ -4,6 +4,7 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import generate_uid, ExplicitVRLittleEndian, UID
 import logging
+import struct
 from typing import List, Dict, Optional, Any, Tuple, Iterator
 
 import pandas as pd

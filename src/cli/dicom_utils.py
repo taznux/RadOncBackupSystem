@@ -131,7 +131,7 @@ def _handle_echo_scu(args: argparse.Namespace):
     assoc = None # Ensure assoc is defined for finally block
     try:
         assoc = _establish_association(
-        args.aet, args.aec, args.host, args.port, [sop_class.VerificationSOPClass]
+        args.aet, args.aec, args.host, args.port, [sop_class.Verification]
         )
         # No need to check 'if assoc:' because _establish_association now raises on failure
         status = assoc.send_c_echo()

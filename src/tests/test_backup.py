@@ -61,8 +61,8 @@ class TestBackupMainFunction(unittest.TestCase):
 
     def test_main_missing_environment_arg_exits_argparse_error(self):
         test_args = ['backup.py'] 
-        with patch.object(sys, 'argv', test_args), \
-             patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
+        with (patch.object(sys, 'argv', test_args),
+              patch('sys.stderr', new_callable=io.StringIO) as mock_stderr):
             with self.assertRaises(SystemExit) as cm:
                 backup_main()
         self.assertEqual(cm.exception.code, 2)
