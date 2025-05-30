@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock # call removed as unused
+from unittest.mock import patch, MagicMock, mock_open # call removed as unused
 import sys
 from io import StringIO
 import os
