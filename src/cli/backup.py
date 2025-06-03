@@ -229,9 +229,9 @@ def _handle_aria_mim_backup(
                 logger.info(f"C-MOVE successful for UID {uid} to {backup_destination_aet}.")
                 if orthanc_uploader:
                     logger.info(f"Verifying storage of UID {uid} in backup target {backup_destination_aet} via C-FIND.")
-                    # Orthanc uploader's store method now uses C-FIND against its configured peer (the backup target)
-                    store_verified = orthanc_uploader.store(sop_instance_uid=uid)
-                    if store_verified:
+                    # Orthanc uploader's confirm_instance_exists method now uses C-FIND against its configured peer (the backup target)
+                    existence_verified = orthanc_uploader.confirm_instance_exists(sop_instance_uid=uid)
+                    if existence_verified:
                         logger.info(f"UID {uid} successfully verified in backup target {backup_destination_aet}.")
                     else:
                         logger.warning(f"UID {uid} NOT verified in backup target {backup_destination_aet} after C-MOVE.")
@@ -387,8 +387,8 @@ def _handle_mosaiq_backup(
                     logger.info(f"C-MOVE successful for UID {sop_uid_for_log} from staging to {backup_target_config['aet']}.")
                     if orthanc_uploader:
                         logger.info(f"Verifying storage of UID {sop_uid_for_log} in backup target {backup_target_config['aet']} via C-FIND.")
-                        store_verified = orthanc_uploader.store(sop_instance_uid=sop_uid_for_log)
-                        if store_verified:
+                        existence_verified = orthanc_uploader.confirm_instance_exists(sop_instance_uid=sop_uid_for_log)
+                        if existence_verified:
                             logger.info(f"UID {sop_uid_for_log} successfully verified in backup target {backup_target_config['aet']}.")
                         else:
                             logger.warning(f"UID {sop_uid_for_log} NOT verified in backup target {backup_target_config['aet']} after C-MOVE from staging.")

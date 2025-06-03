@@ -1,159 +1,45 @@
-from . import DataSource
-from pydicom.dataset import Dataset
-from pynetdicom import AE, evt, StoragePresentationContexts
-from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove
+from .dicom_qr_source import DicomQrDataSource
+# Note: Dataset, AE, SOP classes are now primarily used in DicomQrDataSource
+# We might not need all of them directly in ARIA.py anymore if ARIA specific logic doesn't use them.
+# from pydicom.dataset import Dataset # Keep if ARIA specific methods use it
+# from pynetdicom import AE # Keep if ARIA specific methods use it
+# from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove # Keep if ARIA specific methods use it
 import logging
 
+# Module-level logger can still be used for ARIA-specific messages
+# not originating from the DicomQrDataSource base methods.
 logger = logging.getLogger(__name__)
 
-class ARIA(DataSource):
+class ARIA(DicomQrDataSource):
     """
     Represents the ARIA data source system.
 
-    This class provides methods to query and transfer data (e.g., RTRECORD series)
-    from an ARIA DICOM node using C-FIND and C-MOVE operations.
+    This class utilizes DicomQrDataSource for common DICOM C-FIND and C-MOVE
+    operations and can be extended with ARIA-specific functionalities if needed.
     """
     def __init__(self):
         """
         Initializes the ARIA data source interface.
+        It sets the source_name to "ARIA" for the base class.
         """
-        super().__init__()
-        logger.debug("ARIA DataSource initialized.")
+        super().__init__(source_name="ARIA")
+        # The base class (DicomQrDataSource) initializes its own logger using logging.getLogger(__name__)
+        # which will be 'src.data_sources.dicom_qr_source'.
+        # The self.source_name = "ARIA" in the base class will be used in those log messages.
+        # This ARIA module's own 'logger' (logging.getLogger(__name__)) can be used for
+        # any ARIA-specific logging outside of the inherited query/transfer methods.
+        logger.debug("ARIA DataSource initialized using DicomQrDataSource.")
 
-    def query(self, query_dataset: Dataset, qr_scp: dict) -> set:
-        """
-        Performs a C-FIND query against the ARIA system.
-
-        :param query_dataset: A pydicom Dataset object containing query parameters
-                              (e.g., PatientID, StudyDate, Modality).
-                              Typically, QueryRetrieveLevel should be set (e.g., 'SERIES').
-        :type query_dataset: pydicom.dataset.Dataset
-        :param qr_scp: A dictionary containing the Query/Retrieve SCP details:
-                       {'IP': 'host_ip', 'Port': port_number, 'AETitle': 'AE_TITLE'}
-        :type qr_scp: dict
-        :return: A set of SOPInstanceUIDs found matching the query criteria.
-                 Returns an empty set if no matches are found or if an error occurs.
-        :rtype: set
-        """
-        ae = AE()
-        ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
-        uids = set()
-        
-        logger.info(f"Attempting C-FIND association to ARIA QR SCP: {qr_scp['AETitle']} at {qr_scp['IP']}:{qr_scp['Port']}")
-        assoc = ae.associate(qr_scp['IP'], qr_scp['Port'], ae_title=qr_scp['AETitle'])
-        
-        if assoc.is_established:
-            logger.info("C-FIND Association established with ARIA.")
-            try:
-                responses = assoc.send_c_find(query_dataset, StudyRootQueryRetrieveInformationModelFind)
-                for (status, identifier) in responses:
-                    if status and (status.Status == 0xFF00 or status.Status == 0xFF01): # Pending
-                        if identifier and hasattr(identifier, 'SOPInstanceUID'):
-                            logger.debug(f"C-FIND Pending: Found SOPInstanceUID {identifier.SOPInstanceUID}")
-                            uids.add(identifier.SOPInstanceUID)
-                        else:
-                            logger.debug("C-FIND Pending status with no valid identifier.")
-                    elif status and status.Status == 0x0000: # Success
-                        if identifier and hasattr(identifier, 'SOPInstanceUID'): # Should ideally be no identifier for final success
-                            logger.debug(f"C-FIND Success: Found SOPInstanceUID {identifier.SOPInstanceUID}")
-                            uids.add(identifier.SOPInstanceUID)
-                        logger.info("C-FIND operation completed successfully.")
-                        break 
-                    else: # Failure or unknown status
-                        error_msg = "C-FIND query failed or connection issue."
-                        if status:
-                            error_msg += f" Status: 0x{status.Status:04X}."
-                        else:
-                            error_msg += " No status returned."
-                        logger.error(error_msg)
-                        break 
-            except Exception as e:
-                logger.error(f"Exception during C-FIND operation: {e}", exc_info=True)
-            finally:
-                logger.debug("Releasing C-FIND association with ARIA.")
-                assoc.release()
-        else:
-            logger.error(f"C-FIND Association rejected, aborted or never connected to ARIA SCP: {qr_scp['AETitle']}.")
-        
-        logger.info(f"C-FIND query to ARIA found {len(uids)} SOPInstanceUIDs.")
-        return uids
-
-    def transfer(self, move_dataset: Dataset, qr_scp: dict, backup_destination_aet: str, calling_aet: str) -> bool:
-        """
-        Performs a C-MOVE operation to transfer data from ARIA directly to a specified backup destination AET.
-
-        :param move_dataset: A pydicom Dataset containing parameters for the C-MOVE request
-                             (e.g., PatientID, StudyInstanceUID, SeriesInstanceUID).
-                             QueryRetrieveLevel must be set.
-        :type move_dataset: pydicom.dataset.Dataset
-        :param qr_scp: Dictionary with ARIA QR SCP details: {'IP', 'Port', 'AETitle'}.
-        :type qr_scp: dict
-        :param backup_destination_aet: The AE Title of the final backup destination (e.g., Orthanc).
-        :type backup_destination_aet: str
-        :param calling_aet: The AE Title of this application initiating the C-MOVE.
-        :type calling_aet: str
-        :return: True if the C-MOVE operation reported success (0x0000), False otherwise.
-        :rtype: bool
-        :raises Exception: Can raise exceptions for network or DICOM protocol errors if not handled by pynetdicom.
-        """
-        
-        ae = AE(ae_title=calling_aet)
-        ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
-        # No local SCP setup needed anymore
-        
-        success_flag = False # Flag to track if C-MOVE was successful
-
-        logger.info(f"Attempting C-MOVE association to ARIA QR SCP: {qr_scp['AETitle']} "
-                    f"at {qr_scp['IP']}:{qr_scp['Port']} from AET {calling_aet}.")
-        assoc = ae.associate(qr_scp['IP'], qr_scp['Port'], ae_title=qr_scp['AETitle'])
-        
-        if assoc.is_established:
-            logger.info(f"C-MOVE Association established with ARIA. Sending C-MOVE request for destination AET: {backup_destination_aet}.")
-            try:
-                responses = assoc.send_c_move(move_dataset, backup_destination_aet, StudyRootQueryRetrieveInformationModelMove)
-                for (status, identifier) in responses: 
-                    if status is None:
-                        logger.error("C-MOVE failed: Connection timed out, aborted or received invalid response from ARIA.")
-                        break 
-                    if status.Status == 0xFF00 or status.Status == 0xFF01: # Pending
-                        logger.info(f"C-MOVE pending to {backup_destination_aet}: {status.NumberOfRemainingSuboperations} remaining, "
-                                    f"{status.NumberOfCompletedSuboperations} completed, "
-                                    f"{status.NumberOfWarningSuboperations} warnings, "
-                                    f"{status.NumberOfFailedSuboperations} failures.")
-                    elif status.Status == 0x0000: # Success
-                        logger.info(f"C-MOVE operation to {backup_destination_aet} completed successfully from ARIA's perspective.")
-                        logger.info(f"C-MOVE final status: {status.NumberOfCompletedSuboperations} completed, "
-                                    f"{status.NumberOfWarningSuboperations} warnings, "
-                                    f"{status.NumberOfFailedSuboperations} failures.")
-                        if status.NumberOfFailedSuboperations > 0 or status.NumberOfWarningSuboperations > 0:
-                            logger.warning(f"C-MOVE to {backup_destination_aet} completed with failures/warnings. Check peer logs.")
-                            # Still considered success by the protocol if status is 0x0000
-                        success_flag = True
-                        break 
-                    else: # Failure or other status
-                        error_message = f"C-MOVE operation to {backup_destination_aet} failed. Status: 0x{status.Status:04X}"
-                        if hasattr(status, 'ErrorComment') and status.ErrorComment:
-                            error_message += f" Error Comment: {status.ErrorComment}"
-                        logger.error(error_message)
-                        if identifier and hasattr(identifier, 'AffectedSOPInstanceUID'): # Unlikely for top-level failure
-                            logger.error(f"Affected SOP Instance UID (if any): {identifier.AffectedSOPInstanceUID}")
-                        if hasattr(status, 'FailedSOPInstanceUIDList') and status.FailedSOPInstanceUIDList:
-                             logger.error(f"Failed SOP Instance UID List: {status.FailedSOPInstanceUIDList}")
-                        success_flag = False
-                        break 
-            except Exception as e:
-                logger.error(f"Exception during C-MOVE operation to {backup_destination_aet}: {e}", exc_info=True)
-                success_flag = False # Ensure failure on exception
-            finally:
-                logger.debug("Releasing C-MOVE association with ARIA.")
-                assoc.release()
-        else:
-            logger.error(f"C-MOVE Association rejected, aborted or never connected to ARIA SCP: {qr_scp['AETitle']}.")
-            success_flag = False
-        
-        # No local SCP server to shut down
-        if success_flag:
-            logger.info(f"C-MOVE to {backup_destination_aet} reported overall success.")
-        else:
-            logger.error(f"C-MOVE to {backup_destination_aet} reported overall failure or was not established.")
-        return success_flag
+    # query() and transfer() methods are inherited from DicomQrDataSource.
+    # ARIA-specific overrides or new methods can be added here if necessary.
+    # For example, if ARIA had a special way to prepare the query_dataset:
+    #
+    # def create_aria_specific_query(self, patient_id: str) -> Dataset:
+    #     ds = Dataset()
+    #     ds.PatientID = patient_id
+    #     ds.QueryRetrieveLevel = "STUDY"
+    #     # ... add any ARIA specific tags or default values
+    #     self.logger.info(f"Created ARIA-specific query for patient {patient_id}")
+    #     return ds
+    #
+    # This method could then be called by the application logic before calling self.query().
