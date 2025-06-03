@@ -239,27 +239,52 @@ class Mosaiq(DataSource):
 
     @staticmethod
     def _parse_binary_leaf_data(binary_data: Optional[bytes]) -> List[str]:
-        # !!! IMPORTANT: This is a placeholder. You NEED to implement the actual
-        #     binary parsing logic based on Mosaiq's specific data format.
-        #     Example assumes 4-byte floats (single precision) or 8-byte doubles.
-        if not binary_data:
-            return []
-        
-        # Example for 4-byte floats (single precision) - adjust as needed
-        # This requires knowing the exact byte order (endianness) and data type.
-        # Assume little-endian for MS SQL default.
-        leaf_positions = []
-        try:
-            # Assuming a sequence of floats (e.g., 4 bytes per float)
-            for i in range(0, len(binary_data), 4):
-                # Unpack as little-endian float
-                val = struct.unpack('<f', binary_data[i:i+4])[0]
-                leaf_positions.append(str(val))
-        except Exception as e:
-            logger.error(f"Error parsing binary leaf data: {e}", exc_info=True)
-            return [] # Return empty if parsing fails
+        """
+        Parses binary MLC leaf position data into a list of strings.
 
-        return leaf_positions # Example: ["-12.5", "-10.0", "...", "12.5"]
+        Assumption: The binary data is a sequence of 4-byte single-precision
+        floating-point numbers in little-endian format. Each float represents
+        a leaf position in millimeters. This assumption MUST be verified against
+        Mosaiq's actual data specification for A_Leaf_Set/B_Leaf_Set.
+
+        Args:
+            binary_data: The binary data representing leaf positions.
+
+        Returns:
+            A list of strings, where each string is a float representation
+            of a leaf position. Returns an empty list if input is None, empty,
+            or if a parsing error occurs (e.g. invalid length).
+        """
+        if not binary_data:
+            logger.debug("_parse_binary_leaf_data received None or empty data, returning empty list.")
+            return []
+
+        FLOAT_SIZE = 4  # Size of a single-precision float in bytes
+        if len(binary_data) % FLOAT_SIZE != 0:
+            logger.warning(
+                f"Binary leaf data length ({len(binary_data)} bytes) is not a multiple of {FLOAT_SIZE}. "
+                "Cannot parse. Returning empty list."
+            )
+            return []
+
+        leaf_positions_str: List[str] = []
+        try:
+            num_leaves = len(binary_data) // FLOAT_SIZE
+            for i in range(num_leaves):
+                chunk = binary_data[i * FLOAT_SIZE : (i + 1) * FLOAT_SIZE]
+                # Unpack as little-endian float ('<f')
+                leaf_pos_float = struct.unpack('<f', chunk)[0]
+                # Convert to string, potentially with formatting if needed, e.g., "{:.1f}".format(leaf_pos_float)
+                leaf_positions_str.append(str(leaf_pos_float))
+            logger.debug(f"Successfully parsed {num_leaves} leaf positions from binary data.")
+        except struct.error as e:
+            logger.error(f"Error unpacking binary leaf data: {e}. Data length: {len(binary_data)}", exc_info=True)
+            return [] # Return empty list on struct unpacking errors
+        except Exception as e: # Catch any other unexpected errors during parsing
+            logger.error(f"Unexpected error parsing binary leaf data: {e}", exc_info=True)
+            return []
+
+        return leaf_positions_str
 
     # --- End DICOM Mapping Helpers ---
 

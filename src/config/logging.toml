@@ -51,3 +51,18 @@ propagate = false
 handlers = ["console", "file2", "email_proxy"]
 level = "DEBUG"
 propagate = false
+
+# Handler for flask_app logger
+[handlers.file_flask_app]
+class = "logging.handlers.RotatingFileHandler"
+level = "INFO"
+formatter = "standard"
+filename = "logs/flask_app.log"
+maxBytes = 1048576
+backupCount = 3
+
+# Logger for the Flask application
+[loggers.flask_app]
+handlers = ["console", "file_flask_app"] # Using console and its own file handler
+level = "INFO"
+propagate = false

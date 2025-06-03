@@ -18,7 +18,7 @@ aet = "UCLA_BACKUP_SCU"
 # Details for data sources available at UCLA
 ARIA = { aet = "ARIA_UCLA_AE", ip = "192.168.1.100", port = 104, type = "aria" }
 MIM = { aet = "MIM_UCLA_AE", ip = "192.168.1.101", port = 105, type = "mim" }
-Mosaiq = { type = "mosaiq", db_server = "UCLA_MOSAIQ_DB_IP", db_database = "UCLA_MOSAIQ_DB_NAME", db_username = "user_ucla", db_password = "__UCLA_MOSAIQ_DB_PASSWORD__", odbc_driver = "ODBC Driver 17 for SQL Server" }
+Mosaiq = { type = "mosaiq", db_server = "UCLA_MOSAIQ_DB_IP", db_database = "UCLA_MOSAIQ_DB_NAME", db_username = "user_ucla", db_password_env_var = "UCLA_MOSAIQ_DB_PASSWORD", odbc_driver = "ODBC Driver 17 for SQL Server" }
 # Add other specific source configurations for UCLA if any (e.g. dicom_query_keys, mosaiq_backup_sql_query directly here)
 # Example:
 # ARIA_EXTRA_CONFIG = { dicom_query_level = "SERIES", dicom_query_keys = { PatientID = "*", Modality = "RTDOSE" } }
@@ -47,7 +47,7 @@ aet = "TJU_BACKUP_SCU"
 [TJU.sources]
 ARIA = { aet = "ARIA_TJU_AE", ip = "192.168.2.100", port = 104, type = "aria" }
 MIM = { aet = "MIM_TJU_AE", ip = "192.168.2.101", port = 105, type = "mim" }
-Mosaiq = { type = "mosaiq", db_server = "TJU_MOSAIQ_DB_IP", db_database = "TJU_MOSAIQ_DB_NAME", db_username = "user_tju", db_password = "__TJU_MOSAIQ_DB_PASSWORD__", odbc_driver = "ODBC Driver 17 for SQL Server" }
+Mosaiq = { type = "mosaiq", db_server = "TJU_MOSAIQ_DB_IP", db_database = "TJU_MOSAIQ_DB_NAME", db_username = "user_tju", db_password_env_var = "TJU_MOSAIQ_DB_PASSWORD", odbc_driver = "ODBC Driver 17 for SQL Server" }
 
 [TJU.backup_targets]
 ORTHANC_MAIN_TJU = { aet = "ORTHANC_TJU_BACKUP_AE", ip = "192.168.2.200", port = 4242, type = "orthanc" }

@@ -2,26 +2,29 @@
 Treatment Report Generation CLI.
 
 This script provides a command-line interface to generate a treatment summary report
-from a Mosaiq data source. It uses environment configurations from `environments.toml` 
-to determine the target Mosaiq database details.
+from a Mosaiq data source. It uses environment configurations from `environments.toml`
+(loaded via `config_loader.py`) to determine the target Mosaiq database details.
+Secrets for database access are expected to be in environment variables or a .env file.
 """
 import argparse
-import tomllib # Python 3.11+
+# tomllib is used by config_loader
 import logging
 import sys
-import os # Added
+import os
 from typing import Dict, Any, List, Optional
 
-# Assuming src is in PYTHONPATH or handled by test runner
 from src.data_sources.mosaiq import Mosaiq, MosaiqQueryError
+from src.config.config_loader import load_config, ConfigLoaderError # Import the new loader
 
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
 
-# Define path to environments.toml
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
-ENVIRONMENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "environments.toml")
+# Define paths to configuration files relative to this script's location (src/cli)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ENVIRONMENTS_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "environments.toml")
+LOGGING_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "logging.toml")
+DICOM_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "dicom.toml") # Needed by load_config
 
 
 class ReportCliError(Exception):
@@ -156,17 +159,22 @@ def main():
     logger.setLevel(log_level)
 
     try:
+        # Load all configurations using the new central loader
         try:
-            with open(ENVIRONMENTS_CONFIG_PATH, "rb") as f_binary:
-                loaded_environments = tomllib.load(f_binary)
-        except FileNotFoundError:
-            raise ConfigError(f"Environments configuration file not found: {ENVIRONMENTS_CONFIG_PATH}") from None
-        except tomllib.TOMLDecodeError as e:
-            raise ConfigError(f"Error decoding TOML file {ENVIRONMENTS_CONFIG_PATH}: {e}") from e
+            app_config = load_config(
+                config_path_environments=ENVIRONMENTS_CONFIG_PATH,
+                config_path_logging=LOGGING_CONFIG_PATH,
+                config_path_dicom=DICOM_CONFIG_PATH # Pass dicom.toml path even if not directly used by this script
+            )
+        except ConfigLoaderError as e:
+            logger.critical(f"Failed to load application configuration for get_report: {e}", exc_info=True)
+            print(f"FATAL: Failed to load application configuration: {e}", file=sys.stderr)
+            sys.exit(1)
 
-        env_block = loaded_environments.get(args.environment_name)
+
+        env_block = app_config.get('environments', {}).get(args.environment_name)
         if not env_block:
-            raise ConfigError(f"Environment '{args.environment_name}' not found in {ENVIRONMENTS_CONFIG_PATH}.")
+            raise ConfigError(f"Environment '{args.environment_name}' not found in resolved environments configuration.")
 
         actual_mosaiq_alias = args.mosaiq_source_alias
         if not actual_mosaiq_alias:

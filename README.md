@@ -24,58 +24,79 @@ For detailed documentation on specific components, please refer to the `docs/` d
 
 ## Configuration
 
-The system primarily uses `src/config/environments.toml` for defining operational environments. This file is central to configuring DICOM AE details, database connections, and other environment-specific parameters.
+Configuration is managed centrally by `src/config/config_loader.py`, which loads settings from TOML files and resolves secrets using environment variables.
 
 1.  **Environments (`src/config/environments.toml`)**:
-    *   This is the **primary configuration file**. It defines different operational environments (e.g., clinical sites like UCLA, TJU).
-    *   Each environment is a top-level TOML table (e.g., `[UCLA]`, `[TJU]`).
-    *   Within each environment, configurations are organized into nested tables:
-        *   `script_ae`: Defines the calling AE Title (AET) for the backup scripts when operating in this environment.
-        *   `sources`: A table containing definitions for various data sources (e.g., ARIA, MIM, Mosaiq). Each source entry includes:
-            *   `type`: Specifies the source type (e.g., "aria", "mim", "mosaiq").
-            *   DICOM AE details (`aet`, `ip`, `port`) if applicable.
-            *   Database connection details (`db_server`, `db_database`, `db_username`, `db_password`, `odbc_driver`) for database sources like Mosaiq.
-            *   For Mosaiq, a `staging_target_alias` can be specified, pointing to an entry in `backup_targets` that will serve as the C-STORE destination for generated RT Records.
-        *   `backup_targets`: A table defining backup destinations. Each entry includes:
-            *   `type`: Specifies the target type (e.g., "orthanc" for the main backup, "dicom_scp" for a generic staging SCP).
-            *   DICOM AE details (`aet`, `ip`, `port`).
-        *   `settings`: Contains environment-specific application settings, such as `max_uids_per_run` or `mosaiq_backup_sql_query`.
-    *   Each environment section (e.g., `[UCLA]`) should also define `default_source` and `default_backup` keys. These keys hold aliases that point to specific entries within the `sources` and `backup_targets` tables for that environment, respectively. This simplifies CLI calls by allowing the user to omit source/backup aliases if the defaults are appropriate.
-    *   Example structure:
+    *   This is the **primary configuration file** for defining operational environments (e.g., `[UCLA]`, `[TJU]`).
+    *   It specifies DICOM AE details, database connection parameters (excluding passwords directly), and other environment-specific settings.
+    *   **Important**: Sensitive values like database passwords are not stored directly here. Instead, a key ending with `_env_var` is used to specify the name of an environment variable that holds the actual secret. See the "Secret Management" section below.
+    *   Structure:
+        *   `[EnvironmentName]`: Top-level table for each environment.
+            *   `script_ae`: Defines the calling AE Title for scripts.
+            *   `sources`: Table for data sources (ARIA, MIM, Mosaiq).
+                *   Includes `type`, connection details (AET, IP, port for DICOM; server, database, username for DBs).
+                *   For database passwords, use `db_password_env_var = "YOUR_ENV_VARIABLE_NAME"`.
+            *   `backup_targets`: Table for backup destinations.
+            *   `settings`: Environment-specific application settings.
+            *   `default_source`, `default_backup`: Aliases for default source/backup targets.
+    *   Example with secret management:
         ```toml
         # Example for src/config/environments.toml:
-        [UCLA]
-        description = "UCLA Testbed Environment"
-        default_source = "ARIA_MAIN"
-        default_backup = "ORTHANC_UCLA_BACKUP"
-
-        [UCLA.script_ae]
-        aet = "UCLA_SCRIPT_SCU"
-
-        [UCLA.sources]
-        ARIA_MAIN = { type = "aria", aet = "ARIA_UCLA_AE", ip = "192.168.1.100", port = 104 }
-        MOSAIQ_DB = { type = "mosaiq", db_server = "ucla_db", db_database = "ucla_mosaiq", db_username = "user_ucla", db_password = "__UCLA_DB_PASSWORD__", odbc_driver = "DefaultDriver", staging_target_alias = "UCLA_MOSAIQ_STAGE" }
-
-        [UCLA.backup_targets]
-        ORTHANC_UCLA_BACKUP = { type = "orthanc", aet = "UCLA_ORTHANC_AE", ip = "192.168.1.200", port = 4242 }
-        UCLA_MOSAIQ_STAGE = { type = "dicom_scp", aet = "UCLA_STAGE_AE", ip = "192.168.1.201", port = 11113 }
-
-        [UCLA.settings]
-        max_uids_per_run = 100
-        # mosaiq_backup_sql_query = "SELECT ..."
+        [UCLA.sources.MOSAIQ_DB]
+        type = "mosaiq"
+        db_server = "ucla_db_server_address"
+        db_database = "ucla_mosaiq_db_name"
+        db_username = "ucla_db_user"
+        db_password_env_var = "UCLA_MOSAIQ_DB_PASSWORD" # Env var for password
+        odbc_driver = "ODBC Driver 17 for SQL Server"
+        staging_target_alias = "UCLA_MOSAIQ_STAGE"
         ```
 
 2.  **DICOM Configuration (`src/config/dicom.toml`)**:
-    *   This file is now **largely deprecated**. All environment-specific DICOM AE definitions and database configurations have been moved into `environments.toml`.
-    *   It might be kept for truly global, non-environment-specific settings if any arise, but currently, all operational AE and DB details are expected to be in `environments.toml`.
+    *   This file can hold global, non-environment-specific DICOM settings. However, most AE details are now expected to be within `environments.toml` under their respective environments.
+    *   It is loaded by `config_loader.py` but might be empty or minimal if all relevant settings are in `environments.toml`.
 
 3.  **Logging (`src/config/logging.toml`)**:
-    *   Configure formatters, handlers (console, file, email), and loggers for different modules.
-    *   Review and update handler settings, especially for file paths and the `SMTPHandler` (e.g., `mailhost`, `fromaddr`, `toaddrs`, `subject`) if email notifications are desired.
+    *   Standard TOML configuration for Python's `logging` module. Defines formatters, handlers, and loggers.
+    *   This is loaded and applied by `config_loader.py` at application startup.
+
+## Important: Secret Management
+
+Sensitive configuration values such as database passwords, API keys, and other secrets **must not** be stored directly in configuration files like `environments.toml` that are committed to version control.
+
+This system uses the following approach for managing secrets:
+
+1.  **Environment Variable Placeholders in Configuration**:
+    *   In `src/config/environments.toml`, sensitive fields are configured to point to environment variables. This is done by using a key with an `_env_var` suffix.
+    *   Example: For a database password, instead of `db_password = "actual_password"`, you would use `db_password_env_var = "NAME_OF_THE_ENV_VARIABLE"`.
+
+2.  **Loading Secrets from Environment**:
+    *   The `src/config/config_loader.py` module is responsible for loading all configurations.
+    *   It uses the `python-dotenv` library to automatically load variables defined in a `.env` file located in the project root into the environment. This is primarily for local development.
+    *   When resolving a key like `db_password_env_var`, `config_loader.py` will look for an environment variable named `NAME_OF_THE_ENV_VARIABLE` (as specified by the value of `db_password_env_var`).
+    *   The value of this environment variable will then be used for the actual `db_password` field in the loaded configuration.
+
+3.  **`.env` File for Local Development**:
+    *   Create a file named `.env` in the root of the project.
+    *   Define your actual secrets in this file, one per line, in the format `VARIABLE_NAME="value"`.
+    *   Example `.env` content:
+        ```env
+        UCLA_MOSAIQ_DB_PASSWORD="actual_ucla_mosaiq_password"
+        RADONC_API_KEY="your_flask_app_api_key"
+        ```
+    *   A template file, `.env.example`, is provided in the project root. Copy this to `.env` and fill in your actual secrets.
+
+4.  **`.gitignore`**:
+    *   The `.env` file **must be listed in `.gitignore`** to ensure it is never committed to the version control system. This has been pre-configured.
+
+5.  **Production Environments**:
+    *   In production or deployed environments (e.g., Docker containers, CI/CD systems, cloud platforms), these environment variables should be set directly in the execution environment or through the platform's secret management tools. The `.env` file is typically not used in production.
+
+This system ensures that secrets are decoupled from the codebase and configuration files, enhancing security.
 
 ## Running the CLI Applications
 
-All CLI scripts are located in `src/cli/` and should be run as Python modules from the project's root directory. The primary argument for most scripts is now the `<environment_name>`, which corresponds to a top-level section in `src/config/environments.toml`.
+All CLI scripts are located in `src/cli/` and should be run as Python modules from the project's root directory. They now use `src/config/config_loader.py` to load all necessary configurations, including resolving secrets from environment variables (or `.env` file). The primary argument for most scripts is the `<environment_name>`.
 
 1.  **Backup Data (`backup.py`)**:
     *   Backs up DICOM data for a specified environment and source.
@@ -204,7 +225,7 @@ Detailed documentation for different components of the system can be found in th
 
 ### Backup Systems
 Interfaces for interacting with backup destinations.
--   **Orthanc**: Implements storage and verification against an Orthanc server using its REST API. (See `src/backup_systems/orthanc.py`)
+-   **Orthanc**: Implements backup target interaction (existence check, verification retrieval) using DICOM C-FIND and C-GET via `dicom_utils.py`. (See `src/backup_systems/orthanc.py`)
 
 ### Data Sources
 Interfaces for querying and retrieving data from various clinical systems.
