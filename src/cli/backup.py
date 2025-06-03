@@ -9,12 +9,10 @@ details, backup parameters, and data source types (ARIA, MIM, Mosaiq).
 import argparse
 # import functools # For functools.partial - No longer needed
 # import io - No longer needed for handle_store
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
+# tomllib is now used by config_loader
 from typing import Optional, Dict, Any, Tuple, List 
-from argparse import Namespace # Added
+# Namespace might not be needed if not constructing args for dicom_utils anymore
+# from argparse import Namespace
 
 # from pydicom import dcmwrite - No longer needed for handle_store
 from pydicom.dataset import Dataset, FileMetaDataset
@@ -24,8 +22,12 @@ from src.data_sources.aria import ARIA
 from src.data_sources.mim import MIM
 from src.data_sources.mosaiq import Mosaiq
 from src.backup_systems.orthanc import Orthanc
-from ..cli import dicom_utils # Added
-from ..cli.dicom_utils import DicomOperationError, DicomConnectionError, InvalidInputError # Added
+# dicom_utils is still used for _handle_move_scu if Mosaiq backup path uses it.
+from ..cli import dicom_utils
+from ..cli.dicom_utils import DicomOperationError, DicomConnectionError, InvalidInputError
+# Import the new config loader
+from src.config.config_loader import load_config, ConfigLoaderError
+
 
 import logging
 import os
@@ -33,12 +35,14 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-# Default configuration file paths
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
-ENVIRONMENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "environments.toml")
-# DICOM_CONFIG_PATH is no longer directly used by _load_configurations or backup_data top-level
-# It might be implicitly used if environments.toml points to AE details that were originally in dicom.toml,
-# but the primary config entry point is environments.toml.
+# Define paths to configuration files relative to this script's location (src/cli)
+# Assuming config_loader expects paths from the project root or absolute paths.
+# For CLI scripts, it's often easier to define paths relative to the script or a known base dir.
+# Let's assume project root is parent of src/
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ENVIRONMENTS_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "environments.toml")
+LOGGING_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "logging.toml")
+DICOM_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "dicom.toml")
 
 
 # --- Custom Exceptions ---
@@ -51,35 +55,10 @@ class BackupConfigError(BackupError):
 
 
 # --- Core Functions ---
-# Removed handle_store function
-
-def _load_configurations(
-    environment_name: str, environments_path: str
-) -> Dict[str, Any]:
-    """Loads the specified environment block from environments.toml."""
-    try:
-        with open(environments_path, "rb") as f:
-            environments_cfg = tomllib.load(f)
-    except FileNotFoundError as e:
-        msg = f"Environments configuration file error: {e.filename} not found."
-        logger.error(msg, exc_info=True)
-        raise BackupConfigError(msg) from e
-    except tomllib.TOMLDecodeError as e:
-        msg = f"TOML decoding error in environments configuration file: {e}"
-        logger.error(msg, exc_info=True)
-        raise BackupConfigError(msg) from e
-
-    if environment_name not in environments_cfg:
-        msg = f"Environment '{environment_name}' not found in {environments_path}"
-        logger.error(msg)
-        raise BackupConfigError(msg)
-    
-    logger.info(f"Successfully loaded configuration for environment: {environment_name}")
-    return environments_cfg[environment_name]
-
+# _load_configurations is now replaced by the global load_config
 
 def _initialize_source_system(
-    source_type: str, source_config: Dict[str, Any]
+    source_type: str, source_config: Dict[str, Any] # source_config is a sub-dict from the loaded environments
 ) -> ARIA | MIM | Mosaiq:
     """Initializes and returns the data source system instance."""
     logger.info(f"Initializing data source system of type: {source_type} with config: {source_config.get('aet', source_config.get('db_server'))}") # Log AET or DB server
@@ -412,7 +391,17 @@ def backup_data(environment_name: str, source_alias: Optional[str] = None):
     logger.info(f"Starting backup for environment: {environment_name}, Source Alias: {source_alias or 'Default'}")
     
     try:
-        env_block = _load_configurations(environment_name, ENVIRONMENTS_CONFIG_PATH)
+        # Load all configurations using the new central loader
+        # Note: load_config applies logging config immediately.
+        app_config = load_config(
+            config_path_environments=ENVIRONMENTS_CONFIG_PATH,
+            config_path_logging=LOGGING_CONFIG_PATH,
+            config_path_dicom=DICOM_CONFIG_PATH
+        )
+
+        env_block = app_config.get('environments', {}).get(environment_name)
+        if not env_block:
+            raise BackupConfigError(f"Environment '{environment_name}' not found in resolved environments configuration.")
 
         script_ae_config = env_block.get('script_ae')
         if not script_ae_config or not script_ae_config.get('aet'):

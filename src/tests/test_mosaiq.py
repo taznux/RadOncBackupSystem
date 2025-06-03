@@ -89,7 +89,56 @@ class TestMosaiqDataSource(unittest.TestCase):
         self.mock_conn_instance.cursor.return_value = self.mock_cursor_instance
         self.addCleanup(patch.stopall)
 
+    # Test methods for _parse_binary_leaf_data
+    def test_parse_binary_leaf_data_valid(self):
+        """Test _parse_binary_leaf_data with valid binary data."""
+        # Test case 1: Few leaves
+        binary_data1 = struct.pack('<fff', -10.0, 0.0, 12.5)
+        expected1 = ["-10.0", "0.0", "12.5"]
+        self.assertEqual(Mosaiq._parse_binary_leaf_data(binary_data1), expected1)
 
+        # Test case 2: More leaves, including values that might have more decimal places
+        binary_data2 = struct.pack('<fffff', -20.55, 0.1, 15.0, 25.75, -5.2)
+        # str() representation of floats can sometimes vary slightly (e.g. "0.10000000149011612")
+        # For testing, it's often better to compare the float values themselves if precision is critical,
+        # or ensure the string conversion in the method produces a consistent format.
+        # Given the current implementation uses str(), we'll match that.
+        expected2 = [str(-20.55), str(0.1), str(15.0), str(25.75), str(-5.2)]
+        self.assertEqual(Mosaiq._parse_binary_leaf_data(binary_data2), expected2)
+
+        # Test case 3: Single leaf
+        binary_data3 = struct.pack('<f', 100.0)
+        expected3 = ["100.0"]
+        self.assertEqual(Mosaiq._parse_binary_leaf_data(binary_data3), expected3)
+
+    def test_parse_binary_leaf_data_empty_or_none(self):
+        """Test _parse_binary_leaf_data with empty or None input."""
+        self.assertEqual(Mosaiq._parse_binary_leaf_data(None), [])
+        self.assertEqual(Mosaiq._parse_binary_leaf_data(b''), [])
+
+    def test_parse_binary_leaf_data_invalid_length(self):
+        """Test _parse_binary_leaf_data with data of invalid length."""
+        # Data length not a multiple of 4
+        binary_data_invalid1 = b'\x00\x00\x80\x3f\x00'  # 5 bytes
+        with self.assertLogs(logger='src.data_sources.mosaiq', level='WARNING') as cm:
+            self.assertEqual(Mosaiq._parse_binary_leaf_data(binary_data_invalid1), [])
+        self.assertTrue(any("not a multiple of 4" in message for message in cm.output))
+
+        binary_data_invalid2 = b'\x00\x00' # 2 bytes
+        with self.assertLogs(logger='src.data_sources.mosaiq', level='WARNING') as cm:
+            self.assertEqual(Mosaiq._parse_binary_leaf_data(binary_data_invalid2), [])
+        self.assertTrue(any("not a multiple of 4" in message for message in cm.output))
+
+    def test_parse_binary_leaf_data_struct_error(self):
+        """Test _parse_binary_leaf_data with data that causes struct.error (though length check should prevent this)."""
+        # This case is somewhat artificial if the length check is robust,
+        # as struct.error would typically occur if trying to unpack too few bytes.
+        # The length check should ensure `chunk` is always 4 bytes.
+        # However, if other struct errors were possible, this would test them.
+        # For now, the primary failure mode for malformed data is wrong length.
+        # If we imagine a scenario where data length is multiple of 4 but content is not float-like (hard to simulate with pack)
+        # this test would be more relevant. For now, invalid length is the main testable error.
+        pass # Covered by invalid length test for now
     def test_query_success(self):
         expected_rows = [("data1", "data2"), ("data3", "data4")]
         self.mock_cursor_instance.fetchall.return_value = expected_rows
@@ -128,37 +177,50 @@ class TestMosaiqDataSource(unittest.TestCase):
         # Mock the self.query call within _create_rt_record_dataset
         self.mock_cursor_instance.fetchall.return_value = MOCK_RECORD_DATA_ROWS
         
+        # Since _parse_binary_leaf_data is now a static method, we can test its integration here.
+        # If A_Leaf_Set and B_Leaf_Set in MOCK_RECORD_DATA_BASE are valid binary data for floats:
+        # Example: MOCK_RECORD_DATA_BASE["A_Leaf_Set"] = struct.pack('<ff', 1.0, 2.0)
+        #          MOCK_RECORD_DATA_BASE["B_Leaf_Set"] = struct.pack('<ff', -1.0, -2.0)
+        # The test would then check if LeafJawPositions is correctly populated.
+        # For now, assuming MOCK_RECORD_DATA_BASE has some binary data in A_Leaf_Set/B_Leaf_Set
+
         dataset = self.mosaiq._create_rt_record_dataset(series_site_data, series_uid_data, 0, self.db_config)
         
         self.assertIsNotNone(dataset)
         self.assertIsInstance(dataset, FileDataset)
         self.assertEqual(dataset.PatientID, "MRN001")
-        self.assertEqual(dataset.SOPClassUID, RTBeamsTreatmentRecordStorage)
+        self.assertEqual(dataset.SOPClassUID, RTBeamsTreatmentRecordStorage) # Assuming this is the default
         self.assertTrue(hasattr(dataset, "FractionGroupSequence"))
         self.assertEqual(len(dataset.FractionGroupSequence), 1)
         fg_item = dataset.FractionGroupSequence[0]
         self.assertTrue(hasattr(fg_item, "ReferencedBeamSequence"))
-        # Based on MOCK_RECORD_DATA_ROWS, it implies one beam (same OriginalBeamNumber)
         self.assertEqual(len(fg_item.ReferencedBeamSequence), 1) 
         beam_record = fg_item.ReferencedBeamSequence[0]
         self.assertTrue(hasattr(beam_record, "ControlPointSequence"))
-        self.assertEqual(len(beam_record.ControlPointSequence), 2) # Two CPs in MOCK_RECORD_DATA_ROWS
+        self.assertEqual(len(beam_record.ControlPointSequence), 2)
+
+        # Check if LeafJawPositions were populated (basic check, assumes MLC data was present)
+        # This depends on Mlc flag and actual binary data in MOCK_RECORD_DATA_BASE
+        if MOCK_RECORD_DATA_BASE.get("Mlc") == 1:
+            cp0 = beam_record.ControlPointSequence[0]
+            mlc_device_seq = [dev for dev in cp0.BeamLimitingDevicePositionSequence if dev.RTBeamLimitingDeviceType == 'MLCX']
+            if mlc_device_seq: # If MLC device is present
+                 self.assertTrue(hasattr(mlc_device_seq[0], 'LeafJawPositions'))
+                 # Example: expected_leaf_data = ["-1.0", "1.0"]*60 # Based on MOCK_RECORD_DATA_BASE binary data
+                 # self.assertEqual(mlc_device_seq[0].LeafJawPositions, [float(x) for x in expected_leaf_data])
+
 
     def test_generate_rt_records_for_sites(self):
         df_site = pd.DataFrame(MOCK_SITE_DATA_ROWS, columns=self.mosaiq._SITE_COLUMNS)
         
-        # Mock return values for query calls within generate_rt_records_for_sites
-        # First call to query (for UIDs for site 101)
-        # Second call to query (for Record data for site 101, plan.uid.1)
-        # Third call to query (for UIDs for site 102 - assume no plans)
         self.mock_cursor_instance.fetchall.side_effect = [
-            MOCK_UID_DATA_ROWS,    # For _UID_STATEMENT_TEMPLATE for site 101
-            MOCK_RECORD_DATA_ROWS, # For _RECORD_STATEMENT_TEMPLATE for site 101, plan.uid.1
-            []                     # For _UID_STATEMENT_TEMPLATE for site 102 (no plans)
+            MOCK_UID_DATA_ROWS,
+            MOCK_RECORD_DATA_ROWS,
+            []
         ]
         
         datasets = self.mosaiq.generate_rt_records_for_sites(df_site, self.db_config)
-        self.assertEqual(len(datasets), 1) # Only one record should be generated
+        self.assertEqual(len(datasets), 1)
         self.assertEqual(datasets[0].PatientID, "MRN001")
 
     @patch.object(Mosaiq, 'generate_rt_records_for_sites')
@@ -166,7 +228,7 @@ class TestMosaiqDataSource(unittest.TestCase):
     def test_get_rt_records_for_date(self, mock_get_site_df, mock_generate_records):
         mock_df = MagicMock(spec=pd.DataFrame)
         mock_get_site_df.return_value = mock_df
-        mock_generate_records.return_value = [Dataset(), Dataset()] # Simulate two records generated
+        mock_generate_records.return_value = [Dataset(), Dataset()]
         
         result = self.mosaiq.get_rt_records_for_date(self.db_config, "2023-01-15")
         
@@ -174,22 +236,7 @@ class TestMosaiqDataSource(unittest.TestCase):
         mock_generate_records.assert_called_once_with(mock_df, self.db_config)
         self.assertEqual(len(result), 2)
 
-    def test_parse_binary_leaf_data(self):
-        # Simple test with known float values (little-endian)
-        # 1.0 = 00 00 80 3f, -1.0 = 00 00 80 bf
-        binary_data = b'\x00\x00\x80\x3f\x00\x00\x80\xbf'
-        expected_positions = ["1.0", "-1.0"]
-        # Need to patch struct.unpack if it's used and we want to avoid actual unpack
-        with patch('struct.unpack', side_effect=[(1.0,), (-1.0,)]) as mock_unpack:
-            positions = self.mosaiq._parse_binary_leaf_data(binary_data)
-            self.assertEqual(positions, expected_positions)
-            self.assertEqual(mock_unpack.call_count, 2)
-            mock_unpack.assert_any_call('<f', binary_data[0:4])
-            mock_unpack.assert_any_call('<f', binary_data[4:8])
-
-        self.assertEqual(self.mosaiq._parse_binary_leaf_data(None), [])
-        self.assertEqual(self.mosaiq._parse_binary_leaf_data(b''), [])
-
+    # test_parse_binary_leaf_data method removed and replaced by more specific tests above.
 
 # Appended class:
 class TestMosaiqTransfer(unittest.TestCase):

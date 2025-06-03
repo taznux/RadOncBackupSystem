@@ -19,38 +19,41 @@ between a source system and a backup system (Orthanc). It performs the following
 6.  Prints a summary of validation successes and failures.
 
 Configuration:
-- Requires `environments.toml` for environment-specific settings (source, backup target name).
-- Requires `dicom.toml` for DICOM AE details (IP, Port, AETitle) for both sources
-  and the Orthanc backup (if its DICOM interface were used for verification, though
-  current `Orthanc.verify` uses REST API).
+- Uses `config_loader.py` to load `environments.toml`, `logging.toml`, and `dicom.toml`.
+- `environments.toml` provides environment-specific settings.
+- `dicom.toml` (if used by Orthanc class or other components) for AE details.
+- Secrets (like DB passwords) are loaded from `.env` if present.
 
 Usage:
-    python -m src.cli.validate <environments_config_path> <dicom_config_path> <environment_name>
+    python -m src.cli.validate <environment_name> [source_alias] [backup_alias] [--log_level <LEVEL>]
 
 Example:
-    python -m src.cli.validate src/config/environments.toml src/config/dicom.toml TJU_Mosaiq
+    python -m src.cli.validate UCLA ARIA ORTHANC_MAIN_UCLA --log_level DEBUG
 """
 import argparse
 import logging 
-import tomllib
+# tomllib is used by config_loader
 from pydicom.dataset import Dataset
 from pynetdicom import AE, evt, StoragePresentationContexts, ALL_TRANSFER_SYNTAXES
 from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove, VerificationSOPClass
 from src.backup_systems.orthanc import Orthanc
+from src.config.config_loader import load_config, ConfigLoaderError # Import the new loader
 import io
 import pydicom 
 import os
-from typing import Optional # Added
+import sys # For sys.exit
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # Global list to store received datasets' bytes during C-MOVE
 GLOBAL_RECEIVED_DATASETS = []
 
-# Configuration paths
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), '..', 'config')
-ENVIRONMENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, 'environments.toml')
-# DEFAULT_DICOM_CONFIG_PATH is removed as dicom.toml is no longer directly loaded by this script.
+# Define paths to configuration files relative to this script's location (src/cli)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ENVIRONMENTS_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "environments.toml")
+LOGGING_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "logging.toml")
+DICOM_CONFIG_PATH = os.path.join(PROJECT_ROOT, "src", "config", "dicom.toml")
 
 
 def _handle_move_store(event: evt.Event) -> int:
@@ -107,20 +110,26 @@ def validate_data(environment_name: str, source_alias_arg: Optional[str], backup
     logger.info(f"Starting validation for environment: {environment_name}, Source: {source_alias_arg or 'default'}, Backup: {backup_alias_arg or 'default'}")
 
     try:
-        with open(ENVIRONMENTS_CONFIG_PATH, 'rb') as f:
-            environments_cfg = tomllib.load(f)
-    except FileNotFoundError as e:
-        logger.error(f"Environments configuration file not found: {ENVIRONMENTS_CONFIG_PATH}", exc_info=True)
-        raise
-    except tomllib.TOMLDecodeError as e:
-        logger.error(f"Error decoding environments.toml: {e}", exc_info=True)
-        raise
+        # Load all configurations using the new central loader
+        app_config = load_config(
+            config_path_environments=ENVIRONMENTS_CONFIG_PATH,
+            config_path_logging=LOGGING_CONFIG_PATH,
+            config_path_dicom=DICOM_CONFIG_PATH
+        )
+    except ConfigLoaderError as e:
+        logger.critical(f"Failed to load application configuration for validation: {e}", exc_info=True)
+        # For CLI usage, it's better to exit if core config is missing.
+        # The print is for user feedback if logging isn't visible yet or is redirected.
+        print(f"FATAL: Failed to load application configuration: {e}", file=sys.stderr)
+        sys.exit(1) # Exit if config fails
 
-    env_block = environments_cfg.get(environment_name)
+    env_block = app_config.get('environments', {}).get(environment_name)
     if not env_block:
-        logger.error(f"Environment '{environment_name}' not found in {ENVIRONMENTS_CONFIG_PATH}")
+        logger.error(f"Environment '{environment_name}' not found in resolved environments configuration.")
         raise ValueError(f"Environment '{environment_name}' not found.")
     
+    # dicom_config = app_config.get('dicom', {}) # If needed for AE details not in environments
+
     script_ae_config = env_block.get('script_ae')
     if not script_ae_config or not script_ae_config.get('aet'):
         raise ValueError(f"Missing 'script_ae' configuration or 'aet' in environment '{environment_name}'.")
