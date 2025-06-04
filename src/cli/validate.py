@@ -35,7 +35,7 @@ import logging
 # tomllib is used by config_loader
 from pydicom.dataset import Dataset
 from pynetdicom import AE, evt, StoragePresentationContexts, ALL_TRANSFER_SYNTAXES
-from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove, VerificationSOPClass
+from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelFind, StudyRootQueryRetrieveInformationModelMove, Verification
 from src.backup_systems.orthanc import Orthanc
 from src.config.config_loader import load_config, ConfigLoaderError # Import the new loader
 import io
@@ -165,7 +165,7 @@ def validate_data(environment_name: str, source_alias_arg: Optional[str], backup
     
     ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind) 
     ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove) 
-    ae.add_requested_context(VerificationSOPClass) 
+    ae.add_requested_context(Verification)
 
     scp_handlers = [(evt.EVT_C_STORE, _handle_move_store)]
     scp_server = ae.start_server(("0.0.0.0", local_ae_port), block=False, evt_handlers=scp_handlers)

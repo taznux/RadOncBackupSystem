@@ -1,0 +1,486 @@
+--- a/src/cli/dicom_utils.py
++++ b/src/cli/dicom_utils.py
+@@ -8,6 +8,7 @@
+ import os
+ import sys
+ from typing import List, Tuple, Optional, Any, Iterator
++import click # Added click
+ from functools import partial
+
+ from pydicom import dcmread, dcmwrite
+@@ -25,10 +26,15 @@
+
+ # Configure logger for this module
+ logger = logging.getLogger("dicom_utils")
+-# Default handler if no other configuration is set (e.g., when run as script)
+-if not logger.handlers:
+-    logger.addHandler(logging.StreamHandler(sys.stdout)) # Changed from sys.stdout to sys.stderr for CLI tool
+-    logger.setLevel(logging.INFO)
++
++# Removed old default handler setup; click app will handle basicConfig
++# if not logger.handlers:
++#     logger.addHandler(logging.StreamHandler(sys.stdout))
++#     logger.setLevel(logging.INFO)
++
++def setup_logging_for_dicom_utils(verbose: bool):
++    log_level = logging.DEBUG if verbose else logging.INFO
++    logging.getLogger("pynetdicom").setLevel(log_level) # pynetdicom's own logger
++    logger.setLevel(log_level)
++    if verbose:
++        debug_logger() # pynetdicom's verbose logging
+
+
+ # --- Custom Exceptions ---
+@@ -80,8 +86,12 @@
+
+
+ # --- C-ECHO SCU ---
+-def perform_c_echo(calling_aet: str, peer_aet: str, peer_host: str, peer_port: int) -> None:
++@click.command("echo", help="Perform a DICOM C-ECHO.")
++@click.option("--aet", default="DICOMUTILS", show_default=True, help="Calling AE Title.")
++@click.option("--aec", required=True, help="Called AE Title (SCP).")
++@click.option("--host", required=True, help="Hostname/IP of SCP.")
++@click.option("--port", required=True, type=int, help="Port of SCP.")
++@click.pass_context
++def c_echo_cli(ctx, aet: str, aec: str, host: str, port: int) -> None:
+     """Performs a DICOM C-ECHO operation."""
++    setup_logging_for_dicom_utils(ctx.obj.get('VERBOSE', False))
+     logger.info(
+-        f"Performing C-ECHO to {peer_aet} at {peer_host}:{peer_port} from AET {calling_aet}"
++        f"Performing C-ECHO to {aec} at {host}:{port} from AET {aet}"
+     )
+     assoc = None
+     try:
+         assoc = _establish_association(
+-            calling_aet, peer_aet, peer_host, peer_port, [sop_class.Verification]
++            aet, aec, host, port, [sop_class.Verification]
+         )
+         status = assoc.send_c_echo()
+         if status:
+@@ -97,20 +107,6 @@
+         if assoc and assoc.is_established:
+             assoc.release()
+             logger.info("Association released after C-ECHO.")
+-
+-def _handle_echo_scu(args: argparse.Namespace):
+-    """Handles the C-ECHO SCU operation for CLI."""
+-    logger.info(
+-        f"CLI: Performing C-ECHO to {args.aec} at {args.host}:{args.port} from AET {args.aet}"
+-    )
+-    try:
+-        perform_c_echo(args.aet, args.aec, args.host, args.port)
+-        logger.info("CLI C-ECHO successful.")
+-    except (DicomConnectionError, DicomOperationError) as e:
+-        logger.error(f"CLI C-ECHO operation failed: {e}")
+-        raise
+-
+
+ # --- C-FIND SCU ---
+ def _build_query_dataset_from_params(
+@@ -152,29 +148,38 @@
+     except KeyError:
+         raise InvalidInputError(f"Unsupported combination of operation '{operation}' and query level '{query_level}'.")
+
+-def perform_c_find(
+-    calling_aet: str, peer_aet: str, peer_host: str, peer_port: int, query_level: str,
++@click.command("find", help="Perform a DICOM C-FIND.")
++@click.option("--aet", default="DICOMUTILS", show_default=True, help="Calling AE Title.")
++@click.option("--aec", required=True, help="Called AE Title (SCP).")
++@click.option("--host", required=True, help="Hostname/IP of SCP.")
++@click.option("--port", required=True, type=int, help="Port of SCP.")
++@click.option("--query-level", default="STUDY", type=click.Choice(["PATIENT", "STUDY", "SERIES", "IMAGE"], case_sensitive=False), show_default=True)
++@click.option("--patient-id", default="*", show_default=True, help="Patient ID.")
++@click.option("--study-uid", default="", help="Study Instance UID.")
++@click.option("--series-uid", default="", help="Series Instance UID.")
++@click.option("--sop-instance-uid", default="", help="SOP Instance UID (for IMAGE level).")
++@click.option("--modality", default="", help="Modality.")
++@click.pass_context
++def c_find_cli(
++    ctx, aet: str, aec: str, host: str, port: int, query_level: str,
+     patient_id: str = "*", study_uid: str = "", series_uid: str = "",
+     sop_instance_uid: str = "", modality: str = ""
+ ) -> List[Dataset]:
+     """Performs a DICOM C-FIND operation."""
++    setup_logging_for_dicom_utils(ctx.obj.get('VERBOSE', False))
+     logger.info(
+-        f"Performing C-FIND to {peer_aet} at {peer_host}:{peer_port} (AET {calling_aet}) "
++        f"Performing C-FIND to {aec} at {host}:{port} (AET {aet}) "
+         f"for QL={query_level}, PID={patient_id or '*'}
+-        Study={study_uid or 'Any'}, "
++        Study={study_uid or 'Any'}, "
+         f"Series={series_uid or 'Any'}, SOP={sop_instance_uid or 'Any'}"
+     )
+     query_dataset = _build_query_dataset_from_params(
+         query_level, patient_id, study_uid, series_uid, sop_instance_uid, modality
+     )
+-
+     model = _get_query_model(query_level, "FIND")
+     assoc = None
+     found_identifiers: List[Dataset] = []
+     try:
+-        assoc = _establish_association(calling_aet, peer_aet, peer_host, peer_port, [model])
++        assoc = _establish_association(aet, aec, host, port, [model])
+         responses = assoc.send_c_find(query_dataset, model)
+         last_status = None
+         for status_rsp, identifier_rsp in responses:
+@@ -184,7 +189,7 @@
+                     found_identifiers.append(identifier_rsp)
+             elif status_rsp.Status == 0x0000: # Success
+                 if identifier_rsp: found_identifiers.append(identifier_rsp)
+-                logger.info(f"C-FIND operation with {peer_aet} completed successfully.")
++                logger.info(f"C-FIND operation with {aec} completed successfully.")
+                 break
+             else: # Failure
+                 error_msg = f"C-FIND failed with status 0x{status_rsp.Status:04X}"
+@@ -192,32 +197,22 @@
+                 if comment: error_msg += f" - Error Comment: {comment}"
+                 raise DicomOperationError(error_msg, status=status_rsp.Status)
+
+-        if last_status == 0x0000 and not found_identifiers:
+-            raise DicomOperationError("No instances found", status=0x0000)
+-        return found_identifiers
+-    finally:
+-        if assoc and assoc.is_established: assoc.release(); logger.info("Association released.")
+-
+-def _handle_find_scu(args: argparse.Namespace):
+-    """Handles the C-FIND SCU operation for CLI."""
+-    logger.info(f"CLI: C-FIND to {args.aec}@{args.host}:{args.port} from {args.aet}")
+-    try:
+-        results = perform_c_find(
+-            args.aet, args.aec, args.host, args.port, args.query_level,
+-            args.patient_id, args.study_uid, args.series_uid,
+-            args.sop_instance_uid if hasattr(args, 'sop_instance_uid') else "", # Added for completeness
+-            args.modality
+-        )
+-        logger.info(f"CLI C-FIND found {len(results)} matching instance(s).")
+-        for i, ds in enumerate(results):
++        if not found_identifiers and last_status == 0x0000 : # Success but no results
++            logger.info("C-FIND successful, but no matching instances found.")
++        elif found_identifiers:
++            logger.info(f"C-FIND found {len(found_identifiers)} matching instance(s).")
++            for i, ds in enumerate(found_identifiers):
++                # Ensure logger.info is used for actual results to be visible at INFO level
++                # logger.debug might be too verbose for default operation
++                # Using a more structured output or a different log level for results might be better.
++                # For now, just logging key fields.
++                # This part might need adjustment based on how results should be presented.
+-            logger.info(f"  Result {i+1}: PatientID={ds.PatientID if 'PatientID' in ds else 'N/A'}, "
+-                        f"StudyUID={ds.StudyInstanceUID if 'StudyInstanceUID' in ds else 'N/A'}, "
+-                        f"SeriesUID={ds.SeriesInstanceUID if 'SeriesInstanceUID' in ds else 'N/A'}, "
+-                        f"SOP_UID={ds.SOPInstanceUID if 'SOPInstanceUID' in ds else 'N/A'}")
+-    except DicomOperationError as e:
+-        if e.status == 0x0000 and "No instances found" in str(e): logger.info(f"CLI C-FIND: {e}")
+-        else: logger.error(f"CLI C-FIND failed: {e}")
+-        raise
+-    except (DicomConnectionError, InvalidInputError) as e: logger.error(f"CLI C-FIND failed: {e}"); raise
++                logger.info(f"  Result {i+1}: PatientID={ds.get('PatientID', 'N/A')}, "
++                            f"StudyUID={ds.get('StudyInstanceUID', 'N/A')}, "
++                            f"SeriesUID={ds.get('SeriesInstanceUID', 'N/A')}, "
++                            f"SOP_UID={ds.get('SOPInstanceUID', 'N/A')}")
++        # Return for potential library use, though CLI won't use it directly
++        return found_identifiers
++    finally:
++        if assoc and assoc.is_established: assoc.release(); logger.info("Association released after C-FIND.")
+
+
+ # --- C-MOVE SCU ---
+@@ -229,30 +224,42 @@
+             if hasattr(status_ds, tag_name): logger.info(f"  {attr} Sub-ops: {getattr(status_ds, tag_name)}")
+         if hasattr(status_ds, "ErrorComment") and status_ds.ErrorComment: logger.error(f"  Error: {status_ds.ErrorComment}")
+
+-def _handle_move_scu(args: argparse.Namespace): # Kept for CLI
++@click.command("move", help="Perform a DICOM C-MOVE.")
++@click.option("--aet", default="DICOMUTILS", show_default=True, help="Calling AE Title.")
++@click.option("--aec", required=True, help="Called AE Title (SCP).")
++@click.option("--host", required=True, help="Hostname/IP of SCP.")
++@click.option("--port", required=True, type=int, help="Port of SCP.")
++@click.option("--move-dest-aet", required=True, help="Move Destination AE Title.")
++@click.option("--query-level", default="STUDY", type=click.Choice(["PATIENT", "STUDY", "SERIES", "IMAGE"], case_sensitive=False), show_default=True)
++@click.option("--patient-id", default="*", help="Patient ID for move.")
++@click.option("--study-uid", default="", help="Study Instance UID for move.")
++@click.option("--series-uid", default="", help="Series Instance UID for move.")
++@click.option("--sop-instance-uid", default="", help="SOP Instance UID (for IMAGE level move).")
++@click.pass_context
++def c_move_cli(
++    ctx, aet: str, aec: str, host: str, port: int, move_dest_aet: str,
++    query_level: str, patient_id: str, study_uid: str, series_uid: str, sop_instance_uid: str
++):
+     """Handles the C-MOVE SCU operation for CLI."""
+-    logger.info(f"CLI: C-MOVE to {args.aec}@{args.host}:{args.port}, dest AET: {args.move_dest_aet}")
++    setup_logging_for_dicom_utils(ctx.obj.get('VERBOSE', False))
++    logger.info(f"CLI: C-MOVE to {aec}@{host}:{port}, dest AET: {move_dest_aet}")
+     identifier_dataset = _build_query_dataset_from_params(
+-        args.query_level, args.patient_id, args.study_uid, args.series_uid,
+-        args.sop_instance_uid if hasattr(args, 'sop_instance_uid') and args.query_level == "IMAGE" else ""
+-    )
+-    if args.query_level == "IMAGE" and not identifier_dataset.SOPInstanceUID: # Check for IMAGE level move
++
+-        query_level, patient_id, study_uid, series_uid,
+-        sop_instance_uid if query_level == "IMAGE" else ""
+-    )
+-    if query_level == "IMAGE" and not identifier_dataset.SOPInstanceUID:
+         raise InvalidInputError("SOPInstanceUID is required for IMAGE level C-MOVE.")
+
+     model = _get_query_model(identifier_dataset.QueryRetrieveLevel, "MOVE")
+     assoc = None
+     try:
+-        assoc = _establish_association(args.aet, args.aec, args.host, args.port, [model],
++
+-        assoc = _establish_association(aet, aec, host, port, [model],
+                                        event_handlers=[(evt.EVT_C_MOVE_RSP, _on_move_response)])
+         final_status = None
+-        for status_rsp, _ in assoc.send_c_move(identifier_dataset, args.move_dest_aet, model):
++
+-        for status_rsp, _ in assoc.send_c_move(identifier_dataset, move_dest_aet, model):
+             if status_rsp: final_status = status_rsp.Status
+             else: raise DicomOperationError("C-MOVE failed: No/invalid intermediate status from SCP.")
+
+         if final_status != 0x0000:
+             raise DicomOperationError(f"C-MOVE failed with final status 0x{final_status:04X}", status=final_status)
+         logger.info("CLI C-MOVE operation reported success by SCP.")
+-    except (DicomConnectionError, DicomOperationError, InvalidInputError) as e: logger.error(f"CLI C-MOVE failed: {e}"); raise
+     finally:
+         if assoc and assoc.is_established: assoc.release(); logger.info("Association released.")
+
+@@ -271,13 +278,22 @@
+         logger.info(f"Stored: {filename} (from C-GET)")
+         return 0x0000 # Success for C-STORE sub-operation
+     except Exception as e: logger.error(f"Failed to save DICOM from C-GET: {e}"); return 0xA700
+-@click.command("get", help="Perform a DICOM C-GET.")
+-@click.option("--aet", default="DICOMUTILS", show_default=True, help="Calling AE Title.")
+-@click.option("--aec", required=True, help="Called AE Title (SCP).")
+-@click.option("--host", required=True, help="Hostname/IP of SCP.")
+-@click.option("--port", required=True, type=int, help="Port of SCP.")
+-@click.option("--out-dir", required=True, type=click.Path(file_okay=False, dir_okay=True, writable=True, resolve_path=True), help="Output directory for C-GET.")
+-@click.option("--patient-id", default="", help="Patient ID for C-GET.")
+-@click.option("--study-uid", default="", help="Study Instance UID for C-GET.")
+-@click.option("--series-uid", default="", help="Series Instance UID for C-GET.")
+-@click.option("--sop-instance-uid", default="", help="SOP Instance UID for C-GET.")
+-@click.pass_context
+-def c_get_cli(
+-    ctx, aet: str, aec: str, host: str, port: int, out_dir: str,
++
++@click.command("get", help="Perform a DICOM C-GET.")
++@click.option("--aet", default="DICOMUTILS", show_default=True, help="Calling AE Title.")
++@click.option("--aec", required=True, help="Called AE Title (SCP).")
++@click.option("--host", required=True, help="Hostname/IP of SCP.")
++@click.option("--port", required=True, type=int, help="Port of SCP.")
++@click.option("--out-dir", "output_directory", required=True, type=click.Path(file_okay=False, dir_okay=True, writable=True, resolve_path=True), help="Output directory for C-GET.")
++@click.option("--patient-id", default="", help="Patient ID for C-GET.")
++@click.option("--study-uid", default="", help="Study Instance UID for C-GET.")
++@click.option("--series-uid", default="", help="Series Instance UID for C-GET.")
++@click.option("--sop-instance-uid", default="", help="SOP Instance UID for C-GET.")
++@click.pass_context
++def c_get_cli(
++    ctx, aet: str, aec: str, host: str, port: int, output_directory: str,
+     patient_id: str = "", study_uid: str = "", series_uid: str = "", sop_instance_uid: str = ""
+ ) -> None:
+     """Performs a DICOM C-GET operation."""
+-    setup_logging_for_dicom_utils(ctx.obj.get('VERBOSE', False))
+-    logger.info(f"Performing C-GET from {aec}@{host}:{port} (AET {aet}), output: {out_dir}")
+-    os.makedirs(out_dir, exist_ok=True)
++    setup_logging_for_dicom_utils(ctx.obj.get('VERBOSE', False))
++    logger.info(f"Performing C-GET from {aec}@{host}:{port} (AET {aet}), output: {output_directory}")
++    os.makedirs(output_directory, exist_ok=True)
+
+     query_level = "PATIENT"
+     if sop_instance_uid: query_level = "IMAGE"
+@@ -288,11 +304,11 @@
+         raise InvalidInputError("SOPInstanceUID required for IMAGE level C-GET.")
+
+     model = _get_query_model(query_level, "GET")
+-    event_handlers = [(evt.EVT_C_STORE, partial(_on_get_response, output_directory=out_dir))]
++    event_handlers = [(evt.EVT_C_STORE, partial(_on_get_response, output_directory=output_directory))]
+     contexts = [model] + [ctx for ctx in StoragePresentationContexts if ctx is not None]
+     assoc = None
+     try:
+-        assoc = _establish_association(aet, aec, host, port, contexts, event_handlers)
++        assoc = _establish_association(aet, aec, host, port, contexts, event_handlers)
+         final_status_data = None
+         for status_rsp, _ in assoc.send_c_get(identifier_dataset, model): # ds_rsp often None for C-GET
+             if status_rsp: final_status_data = status_rsp
+@@ -318,16 +334,6 @@
+     finally:
+         if assoc and assoc.is_established: assoc.release(); logger.info("Association released.")
+
+-def _handle_get_scu(args: argparse.Namespace): # Kept for CLI
+-    """Handles the C-GET SCU operation for CLI."""
+-    logger.info(f"CLI: C-GET from {args.aec}@{args.host}:{args.port} (AET {args.aet}), output: {args.out_dir}")
+-    try:
+-        perform_c_get(args.aet, args.aec, args.host, args.port, args.out_dir,
+-                        args.patient_id, args.study_uid, args.series_uid, args.sop_instance_uid)
+-        logger.info("CLI C-GET successful.")
+-    except (DicomConnectionError, DicomOperationError, InvalidInputError) as e: logger.error(f"CLI C-GET failed: {e}"); raise
+-
+
+ # --- C-STORE SCU ---
+ _COMMON_STORAGE_CONTEXTS = list(dict.fromkeys(StoragePresentationContexts + [
+@@ -358,21 +364,28 @@
+     logger.info(f"Found {len(dicom_files)} DICOM file(s) from {filepath}.")
+     return dicom_files
+
+-def perform_c_store(
+-    calling_aet: str, peer_aet: str, peer_host: str, peer_port: int, dicom_filepaths: List[str]
++@click.command("store", help="Perform DICOM C-STORE for file(s).")
++@click.option("--aet", default="DICOMUTILS", show_default=True, help="Calling AE Title.")
++@click.option("--aec", required=True, help="Called AE Title (SCP).")
++@click.option("--host", required=True, help="Hostname/IP of SCP.")
++@click.option("--port", required=True, type=int, help="Port of SCP.")
++@click.option("--filepath", required=True, type=click.Path(exists=True, readable=True), help="Path to DICOM file or directory.")
++@click.pass_context
++def c_store_cli(
++    ctx, aet: str, aec: str, host: str, port: int, filepath: str
+ ) -> Tuple[int, int]:
+     """Performs DICOM C-STORE for a list of files."""
+-    logger.info(f"C-STORE to {peer_aet}@{peer_host}:{peer_port} from {calling_aet} ({len(dicom_filepaths)} files)")
+-    for fpath in dicom_filepaths:
+-        if not os.path.exists(fpath) or not os.path.isfile(fpath):
+-            raise InvalidInputError(f"File not found: {fpath}")
++    setup_logging_for_dicom_utils(ctx.obj.get('VERBOSE', False))
++    dicom_files = _get_dicom_files_from_path(filepath) # Handles path validation
++
++    logger.info(f"C-STORE to {aec}@{host}:{port} from {aet} ({len(dicom_files)} files)")
+
+     assoc = None
+     successful_stores, failed_stores = 0, 0
+     try:
+-        assoc = _establish_association(calling_aet, peer_aet, peer_host, peer_port,
++
+-        assoc = _establish_association(aet, aec, host, port,
+                                        _COMMON_STORAGE_CONTEXTS,
+                                        event_handlers=[(evt.EVT_C_STORE_RSP, _on_store_response)])
+-        for fpath in dicom_filepaths:
++
+-        for fpath in dicom_files:
+             try:
+                 ds = dcmread(fpath)
+                 status_rsp = assoc.send_c_store(ds)
+@@ -388,72 +401,29 @@
+                     logger.error(err_msg)
+             except Exception as e: failed_stores += 1; logger.error(f"Error storing {fpath}: {e}", exc_info=True)
+
+-        if dicom_filepaths and successful_stores == 0 and failed_stores == len(dicom_filepaths):
+-            raise DicomOperationError(f"All {len(dicom_filepaths)} C-STOREs failed at DIMSE/local level.")
++
+-        if dicom_files and successful_stores == 0 and failed_stores == len(dicom_files):
++            logger.error(f"All {len(dicom_files)} C-STOREs failed at DIMSE/local level.")
++            # Depending on desired CLI behavior, could raise DicomOperationError here.
++
++        logger.info(f"C-STORE summary: Success/Warning: {successful_stores}, Failed/Error: {failed_stores}")
++        if failed_stores > 0:
++            logger.warning(f"{failed_stores} files had issues during C-STORE.")
++
+         return successful_stores, failed_stores
+     finally:
+         if assoc and assoc.is_established: assoc.release(); logger.info("Association released.")
+
+-def _handle_store_scu(args: argparse.Namespace): # Kept for CLI
+-    """Handles C-STORE SCU for CLI."""
+-    logger.info(f"CLI: C-STORE to {args.aec}@{args.host}:{args.port} from {args.aet}")
+-    try:
+-        files = _get_dicom_files_from_path(args.filepath)
+-        ok, fail = perform_c_store(args.aet, args.aec, args.host, args.port, files)
+-        logger.info(f"CLI C-STORE summary: Success/Warning: {ok}, Failed/Error: {fail}")
+-        if files and ok == 0 and fail == len(files): raise DicomOperationError("All CLI C-STOREs failed.")
+-        elif fail > 0: logger.warning(f"{fail} files had issues during CLI C-STORE.")
+-    except (DicomConnectionError, DicomOperationError, InvalidInputError) as e: logger.error(f"CLI C-STORE failed: {e}"); raise
+-
+-
+-# --- Argument Parsing and Main Function ---
+-def _setup_parsers() -> argparse.ArgumentParser:
+-    """Sets up and returns the main argument parser with subparsers."""
+-    parser = argparse.ArgumentParser(description="DICOM Network Utility Tool.")
+-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
+-    common_parser = argparse.ArgumentParser(add_help=False)
+-    common_parser.add_argument("--aet", default="DICOMUTILS", help="Calling AE Title.")
+-    common_parser.add_argument("--aec", required=True, help="Called AE Title (SCP).")
+-    common_parser.add_argument("--host", required=True, help="Hostname/IP of SCP.")
+-    common_parser.add_argument("--port", required=True, type=int, help="Port of SCP.")
+-    subparsers = parser.add_subparsers(title="Commands", dest="command", required=True)
+-
+-    echo_parser = subparsers.add_parser("echo", help="C-ECHO.", parents=[common_parser])
+-    echo_parser.set_defaults(func=_handle_echo_scu)
+-
+-    find_parser = subparsers.add_parser("find", help="C-FIND.", parents=[common_parser])
+-    find_parser.add_argument("--query-level", default="STUDY", choices=["PATIENT", "STUDY", "SERIES", "IMAGE"])
+-    find_parser.add_argument("--patient-id", default="*", help="Patient ID.") # Changed default to *
+-    find_parser.add_argument("--study-uid", default="", help="Study UID.")
+-    find_parser.add_argument("--series-uid", default="", help="Series UID.")
+-    find_parser.add_argument("--sop-instance-uid", default="", help="SOP Instance UID (for IMAGE level).")
+-    find_parser.add_argument("--modality", default="", help="Modality.")
+-    find_parser.set_defaults(func=_handle_find_scu)
+-
+-    move_parser = subparsers.add_parser("move", help="C-MOVE.", parents=[common_parser])
+-    move_parser.add_argument("--move-dest-aet", required=True, help="Move Destination AET.")
+-    move_parser.add_argument("--query-level", default="STUDY", choices=["PATIENT", "STUDY", "SERIES", "IMAGE"]) # Added IMAGE
+-    move_parser.add_argument("--patient-id", help="Patient ID for move.")
+-    move_parser.add_argument("--study-uid", help="Study UID for move.")
+-    move_parser.add_argument("--series-uid", help="Series UID for move.")
+-    move_parser.add_argument("--sop-instance-uid", help="SOP UID for IMAGE level move.") # Added for IMAGE level move
+-    move_parser.set_defaults(func=_handle_move_scu)
+-
+-    store_parser = subparsers.add_parser("store", help="C-STORE.", parents=[common_parser])
+-    store_parser.add_argument("--filepath", required=True, help="Path to DICOM file/directory.")
+-    store_parser.set_defaults(func=_handle_store_scu)
+-
+-    get_parser = subparsers.add_parser("get", help="C-GET.", parents=[common_parser])
+-    get_parser.add_argument("--patient-id", default="", help="Patient ID for C-GET.")
+-    get_parser.add_argument("--study-uid", default="", help="Study UID for C-GET.")
+-    get_parser.add_argument("--series-uid", default="", help="Series UID for C-GET.")
+-    get_parser.add_argument("--sop-instance-uid", default="", help="SOP UID for C-GET.")
+-    get_parser.add_argument("--out-dir", required=True, help="Output directory for C-GET.")
+-    get_parser.set_defaults(func=_handle_get_scu)
+-    return parser
+-
+-def main_cli(): # Renamed from main to main_cli to avoid confusion if imported
+-    """Main function for CLI argument parsing and dispatching."""
+-    parser = _setup_parsers()
+-    args = parser.parse_args()
+-
+-    if args.verbose: logger.setLevel(logging.DEBUG); debug_logger()
+-    else:
+-        if logger.level == logging.NOTSET or logger.level > logging.INFO: # Ensure INFO if not set lower
+-            logger.setLevel(logging.INFO)
+-
+-    # Configure root logger if no handlers are present, for CLI basic output
+-    if not logging.getLogger().hasHandlers():
+-         logging.basicConfig(level=logger.level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", stream=sys.stdout)
+-
+-    if hasattr(args, "func"):
+-        try:
+-            args.func(args)
+-        except DicomUtilsError as e:
+-            print(f"Error: {e}", file=sys.stderr) # Already logged, this is for user feedback
+-            raise # Re-raise for the __main__ block to handle exit code
+-        except Exception as e:
+-            logger.critical(f"Unexpected critical error: {e}", exc_info=True)
+-            print(f"Unexpected critical error: {e}", file=sys.stderr)
+-            raise DicomUtilsError(f"Unexpected critical error: {e}") from e
+-    else:
+-        parser.print_help(sys.stderr)
+-        raise InvalidInputError("No command provided.")
+-
+-if __name__ == "__main__":
+-    try:
+-        main_cli()
+-        sys.exit(0)
+-    except DicomUtilsError: # Handles errors raised and re-raised by main_cli
+-        sys.exit(1)
+-    except Exception: # Catch any truly unexpected errors not wrapped by DicomUtilsError
+-        sys.exit(2) # Different exit code for truly unexpected
++# Click group for dicom utilities
++@click.group("dicom", help="DICOM network operations (C-ECHO, C-FIND, C-MOVE, C-STORE, C-GET).")
++def dicom_cli_group():
++    """Group for DICOM utilities."""
++    pass
++
++dicom_cli_group.add_command(c_echo_cli)
++dicom_cli_group.add_command(c_find_cli)
++dicom_cli_group.add_command(c_move_cli)
++dicom_cli_group.add_command(c_store_cli)
++dicom_cli_group.add_command(c_get_cli)
++
++# The main `robs` group in `src/cli/main.py` will add `dicom_cli_group`.
++# Example:
++# from . import dicom_utils
++# robs.add_command(dicom_utils.dicom_cli_group)
