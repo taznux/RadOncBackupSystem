@@ -348,8 +348,8 @@ def _handle_get_scu(args: argparse.Namespace): # Kept for CLI
 
 # --- C-STORE SCU ---
 _COMMON_STORAGE_CONTEXTS = list(dict.fromkeys(StoragePresentationContexts + [
-    sop_class.RTImageStorage.UID, sop_class.PositronEmissionTomographyImageStorage.UID,
-    sop_class.UltrasoundMultiframeImageStorage.UID,
+    sop_class.RTImageStorage, sop_class.PositronEmissionTomographyImageStorage,
+    sop_class.UltrasoundMultiframeImageStorage,
 ]))
 
 def _on_store_response(event: evt.Event): # For CLI logging

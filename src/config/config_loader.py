@@ -3,7 +3,7 @@ import tomllib # Or tomli if Python < 3.11
 import logging
 import logging.config
 import dotenv
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List, Union, Optional
 
 logger = logging.getLogger(__name__)
 
