@@ -205,6 +205,20 @@ class Mosaiq(DataSource):
         return 'UNKNOWN'
 
     @staticmethod
+    def _map_treatment_verification_status_enum_to_dicom(enum_val: Optional[int]) -> str:
+        # Mosaiq enum (assumed based on resilience_mosaiq):
+        # (Value 0 might be unspecified or different, needs confirmation if possible,
+        # but DICOM allows empty string for Type 2 tags if value is unknown)
+        # 1 = VERIFIED, 2 = VERIFIED_OVR, 3 = NOT_VERIFIED
+        if enum_val == 1:
+            return 'VERIFIED'
+        elif enum_val == 2:
+            return 'VERIFIED_OVR' # Verified with Override
+        elif enum_val == 3:
+            return 'NOT_VERIFIED'
+        return '' # Return empty if unknown or unmapped
+
+    @staticmethod
     def _map_radiation_type(modality_enum: Optional[int]) -> str:
         # Modality_Enum: 0 = Unspecified, 1 = X-rays, 2 = Electrons, 3 = Co-60, 6 = Protons, 9 = Ion
         if modality_enum == 1: # X-rays
@@ -355,7 +369,29 @@ class Mosaiq(DataSource):
         self, series_site_data: pd.Series, series_uid_data: pd.Series,
         plan_idx: int, db_config: Dict[str, str]
     ) -> Optional[FileDataset]:
+        """
+        Creates a single DICOM RT Record FileDataset object.
 
+        This method synthesizes an RT Record based on site data, UID data (linking
+        to the RT Plan), and detailed treatment records queried from Mosaiq for a
+        specific patient, site, and plan. It includes comprehensive information
+        such as patient demographics, study/series details, fraction group and beam
+        sequences, control point data (including MLC and jaw positions),
+        beam termination statuses, and custom private tags (0x3261) for
+        site name, setup notes, activity, and RT plan label.
+
+        Args:
+            series_site_data: A pandas Series containing site-specific information
+                              (e.g., MRN, Site_Name, SetupNote).
+            series_uid_data: A pandas Series containing DICOM UID and plan label
+                             information for the referenced RT Plan.
+            plan_idx: The index of the current plan (used for logging/identification).
+            db_config: Database configuration dictionary.
+
+        Returns:
+            A pydicom FileDataset object representing the RT Record, or None if
+            essential data is missing or an error occurs.
+        """
         site_id = str(series_site_data["SIT_SET_ID"])
         mrd_id = str(series_site_data["MRN"])
         site_name = str(series_site_data.get("Site_Name", ""))
@@ -472,6 +508,15 @@ class Mosaiq(DataSource):
 
             # Delivered Meterset (total for the beam)
             beam_record.DeliveredPrimaryMeterset = float(beam_data_common.get("Meterset", 0.0)) # Total meterset for the beam
+
+            # Termination Status and Code
+            beam_record.TreatmentTerminationStatus = self._map_termination_status_enum_to_dicom(
+                beam_data_common.get("Termination_Status_Enum")
+            )
+            beam_record.TreatmentTerminationCode = str(beam_data_common.get("TerminationCode", ""))
+            beam_record.TreatmentVerificationStatus = self._map_treatment_verification_status_enum_to_dicom(
+                beam_data_common.get("Termination_Verify_Status_Enum")
+            )
             
             # Control Point Sequence for the current beam
             beam_record.ControlPointSequence = Sequence()
@@ -616,6 +661,25 @@ class Mosaiq(DataSource):
         return rt_record_datasets
 
     def get_rt_records_for_date(self, db_config: Dict[str, str], target_date: Optional[str] = None) -> List[FileDataset]:
+        """
+        Retrieves and generates RT Record DICOM datasets for all scheduled
+        treatments on a given date.
+
+        For each scheduled treatment site, it fetches associated RT Plan UIDs and
+        then generates a detailed RT Record DICOM object. These objects include
+        private tags for TJU-specific data and comprehensive beam delivery details,
+        including termination statuses.
+
+        Args:
+            db_config: Database configuration dictionary.
+            target_date: The target date for which to retrieve records,
+                         in 'YYYY-MM-DD' format. If None, defaults to the
+                         current date in the EST timezone.
+
+        Returns:
+            A list of pydicom FileDataset objects, each representing an RT Record.
+            Returns an empty list if no data is found or if errors occur.
+        """
         if target_date is None:
             date_str = datetime.datetime.now(tz=self._EST_TZ).date().strftime("%Y-%m-%d")
             logger.info(f"No target date provided, using current EST date: {date_str}")
