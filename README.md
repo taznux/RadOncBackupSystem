@@ -38,6 +38,13 @@ Configuration is managed centrally by `src/config/config_loader.py`, which loads
                 *   For database passwords, use `db_password_env_var = "YOUR_ENV_VARIABLE_NAME"`.
             *   `backup_targets`: Table for backup destinations.
             *   `settings`: Environment-specific application settings.
+        *   "This table is used for environment-specific operational parameters. For example:"
+        *   ```toml
+          # Example for [EnvironmentName.settings]
+          # [UCLA.settings]
+          # max_uids_per_run = 100 # Optional: limits instances processed by backup.py for ARIA/MIM per run
+          # mosaiq_backup_sql_query = "SELECT PatientID, StudyDate FROM RadOncOutputTable WHERE ExportDate > '2023-01-01'" # Example SQL for Mosaiq backup
+          ```
             *   `default_source`, `default_backup`: Aliases for default source/backup targets.
     *   Example with secret management:
         ```toml
@@ -53,8 +60,8 @@ Configuration is managed centrally by `src/config/config_loader.py`, which loads
         ```
 
 2.  **DICOM Configuration (`src/config/dicom.toml`)**:
-    *   This file can hold global, non-environment-specific DICOM settings. However, most AE details are now expected to be within `environments.toml` under their respective environments.
-    *   It is loaded by `config_loader.py` but might be empty or minimal if all relevant settings are in `environments.toml`.
+    *   This file is intended for truly global, non-environment-specific DICOM settings, which are expected to be rare.
+    *   Most, if not all, DICOM AE and related configurations should be defined within `environments.toml` under their respective environment, source, or backup target. This `dicom.toml` file may be empty or very minimal in typical setups.
 
 3.  **Logging (`src/config/logging.toml`)**:
     *   Standard TOML configuration for Python's `logging` module. Defines formatters, handlers, and loggers.
@@ -110,6 +117,11 @@ All CLI scripts are located in `src/cli/` and should be run as Python modules fr
         # To use the default_source for UCLA:
         python -m src.cli.backup UCLA
         ```
+    *   **Mosaiq Backup Workflow:** For Mosaiq sources, `backup.py` executes a two-step process:
+        1.  Data is queried from the Mosaiq database and converted into DICOM format.
+        2.  These DICOM instances are C-STOREd to a *staging SCP*. The AE details for this staging SCP are specified by the `staging_target_alias` key within the Mosaiq source's configuration block in `environments.toml`. This alias must correspond to an entry under `[EnvironmentName.backup_targets]`.
+        3.  A C-MOVE operation is then initiated to transfer the data from the staging SCP to the final *backup target SCP* (typically defined by `default_backup` in the environment's configuration).
+    *   **Default Source/Target:** If the `[source_alias]` argument is omitted, the `default_source` defined for the `<environment_name>` in `environments.toml` will be used. The backup destination is determined by the `default_backup` alias specified in the same environment's configuration.
 
 2.  **Query Data Sources (`query.py`)**:
     *   Queries information from data sources using DICOM C-FIND.
@@ -202,8 +214,9 @@ The Flask application provides HTTP endpoints for interacting with the backup sy
 
 *   **Endpoints**:
     *   `POST /configure_backup`: Placeholder for configuring backup settings.
-    *   `GET /view_logs?type=<log_type>`: View specific log files (e.g., `pynetdicom`, `scu`, `flask_app`).
+    *   `GET /view_logs?type=<log_type>`: View specific log files (e.g., `pynetdicom`, `scu`, `flask_app`) (e.g., `GET /view_logs?type=flask_app` to view the Flask application log, or `GET /view_logs?type=pynetdicom` for pynetdicom logs).
     *   `POST /run_recovery`: Placeholder for initiating a recovery process.
+*   All Flask application endpoints are protected by an API key. Ensure the `RADONC_API_KEY` environment variable is set before running the application. Refer to the 'Important: Secret Management' section for guidance on setting environment variables.
 *   **Running the App**:
     1.  Ensure configurations in `src/config/` are set up.
     2.  Run the application from the project root:
@@ -225,7 +238,7 @@ Detailed documentation for different components of the system can be found in th
 
 ### Backup Systems
 Interfaces for interacting with backup destinations.
--   **Orthanc**: Implements backup target interaction (existence check, verification retrieval) using DICOM C-FIND and C-GET via `dicom_utils.py`. (See `src/backup_systems/orthanc.py`)
+-   **Orthanc**: The `src/backup_systems/orthanc.py` module provides an interface (the `Orthanc` class) to interact with a DICOM peer (typically your Orthanc server instance) primarily for *verifying* backups. It uses C-FIND to confirm instance existence and C-GET to retrieve instances for byte-level comparison against original data. The actual transfer of data to the Orthanc server (acting as an SCP) is usually handled by C-MOVE commands initiated from data sources (for ARIA/MIM) or from a staging SCP (for Mosaiq), as orchestrated by `src/cli/backup.py`.
 
 ### Data Sources
 Interfaces for querying and retrieving data from various clinical systems.
